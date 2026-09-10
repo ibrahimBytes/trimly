@@ -20,7 +20,7 @@ services:
     image: redis:latest
     container_name: url_shortener_redis
     ports:
-      - "6379:6379"
+      - "6380:6379"
     networks:
       - url_shortener
 
@@ -50,4 +50,4 @@ volumes:
 
 networks:
   url_shortener:
-    driver: bridge
+    driver: bridge

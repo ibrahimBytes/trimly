@@ -1,25 +1,61 @@
 services:
   - type: web
     name: url-shortener
-    env: docker
+    runtime: docker
     plan: free
     branch: master
+
+    dockerfilePath: ./Dockerfile
+    dockerContext: .
+
+    healthCheckPath: /actuator/health
+
     envVars:
+      # PostgreSQL / Neon
       - key: SPRING_DATASOURCE_URL
         sync: false
+
       - key: SPRING_DATASOURCE_USERNAME
         sync: false
+
       - key: SPRING_DATASOURCE_PASSWORD
         sync: false
-      - key: SPRING_DATA_REDIS_HOST
+
+      # Redis / Upstash
+      - key: SPRING_DATA_REDIS_URL
         sync: false
-      - key: SPRING_DATA_REDIS_PORT
+
+      # Kafka / Aiven
+      - key: KAFKA_SERVERS
         sync: false
-      - key: SPRING_DATA_REDIS_PASSWORD
+
+      - key: KAFKA_SECURITY_PROTOCOL
+        value: SASL_SSL
+
+      - key: KAFKA_SASL_MECHANISM
+        value: SCRAM-SHA-256
+
+      - key: KAFKA_SASL_JAAS_CONFIG
         sync: false
-      - key: SPRING_DATA_REDIS_SSL
-        value: "true"
-      - key: RATE_LIMIT
-        value: "20"
+
+      - key: KAFKA_SSL_TRUSTSTORE_TYPE
+        value: PEM
+
+      - key: KAFKA_SSL_TRUSTSTORE_CERTIFICATES
+        sync: false
+
+      # JWT authentication
+      - key: JWT_SECRET
+        sync: false
+
+      # Google authentication
+      - key: GOOGLE_CLIENT_ID
+        sync: false
+
+      # Generated short-link base URL
       - key: APP_BASE_URL
         sync: false
+
+      # API rate limiting
+      - key: RATE_LIMIT
+        value: "20" 

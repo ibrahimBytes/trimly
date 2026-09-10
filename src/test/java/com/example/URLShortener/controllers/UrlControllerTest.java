@@ -1,163 +1,420 @@
 package com.example.URLShortener.controllers;
 
+import com.example.URLShortener.config.KafkaConfig;
+import com.example.URLShortener.dto.AnalyticsResponse;
 import com.example.URLShortener.dto.URLRequest;
 import com.example.URLShortener.dto.URLResponse;
+import com.example.URLShortener.models.User;
+import com.example.URLShortener.services.AnalyticsService;
 import com.example.URLShortener.services.UrlService;
 import com.example.URLShortener.services.UrlService.AliasAlreadyExistsException;
 import com.example.URLShortener.services.UrlService.UrlExpiredException;
 import com.example.URLShortener.services.UrlService.UrlNotFoundException;
+import jakarta.servlet.http.HttpServletRequest;
+import org.junit.jupiter.api.AfterEach;
+import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
-import org.mockito.Mockito;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
 import org.springframework.kafka.core.KafkaTemplate;
+import org.springframework.security.authentication.UsernamePasswordAuthenticationToken;
+import org.springframework.security.core.Authentication;
+import org.springframework.security.core.Authentication;
+import org.springframework.security.core.context.SecurityContextHolder;
 import tools.jackson.databind.ObjectMapper;
-import jakarta.servlet.http.HttpServletRequest;
+
+import java.util.List;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.ArgumentMatchers.*;
 import static org.mockito.Mockito.*;
 
-public class UrlControllerTest {
+class UrlControllerTest {
 
-        private final ObjectMapper objectMapper = new ObjectMapper();
+    private UrlService urlService;
+    private AnalyticsService analyticsService;
+    private KafkaTemplate<String, String> kafkaTemplate;
+    private HttpServletRequest request;
+    private ObjectMapper objectMapper;
+    private urlController controller;
 
-        @SuppressWarnings("unchecked")
-        private KafkaTemplate<String, String> mockKafkaTemplate() {
-                return Mockito.mock(KafkaTemplate.class);
-        }
+    private User testUser;
+    private Authentication authentication;
 
-        @Test
-        void getLongURLByShortURL_redirectsWhenFound() {
-                UrlService urlService = Mockito.mock(UrlService.class);
-                KafkaTemplate<String, String> kafkaTemplate = mockKafkaTemplate();
-                HttpServletRequest request = Mockito.mock(HttpServletRequest.class);
-                urlController controller = new urlController(urlService, kafkaTemplate, objectMapper);
 
-                when(urlService.resolveLongUrl("code")).thenReturn("https://example.com");
-                when(request.getHeader("X-Forwarded-For")).thenReturn(null);
-                when(request.getRemoteAddr()).thenReturn("127.0.0.1");
-                when(request.getHeader("User-Agent")).thenReturn("TestAgent");
+    @BeforeEach
+    void setUp() {
+        urlService = mock(UrlService.class);
+        analyticsService = mock(AnalyticsService.class);
+        kafkaTemplate = mock(KafkaTemplate.class);
+        request = mock(HttpServletRequest.class);
+        objectMapper = new ObjectMapper();
 
-                ResponseEntity<Void> response = controller.getLongURLByShortURL("code", request);
+        testUser = User.builder()
+                .id(1)
+                .email("test@example.com")
+                .build();
 
-                assertThat(response.getStatusCode()).isEqualTo(HttpStatus.FOUND);
-                assertThat(response.getHeaders().getLocation()).hasToString("https://example.com");
+        authentication =
+                new UsernamePasswordAuthenticationToken(
+                        testUser,
+                        null,
+                        List.of()
+                );
 
-                // Verify Kafka publish was called with correct topic and key
-                verify(kafkaTemplate).send(eq("url-click-events"), eq("code"), anyString());
-        }
+        SecurityContextHolder.getContext()
+                .setAuthentication(authentication);
 
-        @Test
-        void getLongURLByShortURL_publishesCorrectClickEventToKafka() {
-                UrlService urlService = Mockito.mock(UrlService.class);
-                KafkaTemplate<String, String> kafkaTemplate = mockKafkaTemplate();
-                HttpServletRequest request = Mockito.mock(HttpServletRequest.class);
-                urlController controller = new urlController(urlService, kafkaTemplate, objectMapper);
+        controller = new urlController(
+                urlService,
+                analyticsService,
+                kafkaTemplate,
+                objectMapper
+        );
+    }
 
-                when(urlService.resolveLongUrl("abc")).thenReturn("https://google.com");
-                when(request.getHeader("X-Forwarded-For")).thenReturn("192.168.1.100");
-                when(request.getHeader("User-Agent")).thenReturn("Mozilla/5.0");
+    @AfterEach
+    void tearDown() {
+        SecurityContextHolder.clearContext();
+    }
 
-                controller.getLongURLByShortURL("abc", request);
+    // -------------------------------------------------------------------------
+    // GET /api/urls/{shortUrl}
+    // -------------------------------------------------------------------------
 
-                // Verify a JSON string containing the short URL was published
-                verify(kafkaTemplate).send(eq("url-click-events"), eq("abc"), contains("\"shortUrl\":\"abc\""));
-        }
+    @Test
+    void getLongURLByShortURL_redirectsWhenFound() {
+        when(urlService.resolveLongUrl("abc"))
+                .thenReturn("https://example.com");
 
-        @Test
-        void getLongURLByShortURL_returnsGoneWhenExpired() {
-                UrlService urlService = Mockito.mock(UrlService.class);
-                KafkaTemplate<String, String> kafkaTemplate = mockKafkaTemplate();
-                HttpServletRequest request = Mockito.mock(HttpServletRequest.class);
-                urlController controller = new urlController(urlService, kafkaTemplate, objectMapper);
+        when(request.getHeader("X-Forwarded-For"))
+                .thenReturn(null);
 
-                Mockito.doThrow(new UrlExpiredException("expired")).when(urlService).resolveLongUrl("expired");
+        when(request.getRemoteAddr())
+                .thenReturn("127.0.0.1");
 
-                ResponseEntity<Void> response = controller.getLongURLByShortURL("expired", request);
-                assertThat(response.getStatusCode()).isEqualTo(HttpStatus.GONE);
+        when(request.getHeader("User-Agent"))
+                .thenReturn("JUnit");
 
-                // Verify Kafka was NOT called when URL is expired
-                verifyNoInteractions(kafkaTemplate);
-        }
+        ResponseEntity<Void> response =
+                controller.getLongURLByShortURL(
+                        "abc",
+                        request
+                );
 
-        @Test
-        void getLongURLByShortURL_returnsNotFoundWhenMissing() {
-                UrlService urlService = Mockito.mock(UrlService.class);
-                KafkaTemplate<String, String> kafkaTemplate = mockKafkaTemplate();
-                HttpServletRequest request = Mockito.mock(HttpServletRequest.class);
-                urlController controller = new urlController(urlService, kafkaTemplate, objectMapper);
+        assertThat(response.getStatusCode())
+                .isEqualTo(HttpStatus.FOUND);
 
-                Mockito.doThrow(new UrlNotFoundException("missing")).when(urlService).resolveLongUrl("missing");
+        assertThat(response.getHeaders().getLocation())
+                .hasToString("https://example.com");
 
-                ResponseEntity<Void> response = controller.getLongURLByShortURL("missing", request);
-                assertThat(response.getStatusCode()).isEqualTo(HttpStatus.NOT_FOUND);
+        verify(kafkaTemplate)
+                .send(
+                        eq(KafkaConfig.CLICK_EVENTS_TOPIC),
+                        eq("abc"),
+                        anyString()
+                );
+    }
 
-                // Verify Kafka was NOT called when URL is not found
-                verifyNoInteractions(kafkaTemplate);
-        }
+    @Test
+    void getLongURLByShortURL_publishesClickEvent() {
+        when(urlService.resolveLongUrl("abc"))
+                .thenReturn("https://google.com");
 
-        @Test
-        void getLongURLByShortURL_stillRedirectsWhenKafkaFails() {
-                UrlService urlService = Mockito.mock(UrlService.class);
-                KafkaTemplate<String, String> kafkaTemplate = mockKafkaTemplate();
-                HttpServletRequest request = Mockito.mock(HttpServletRequest.class);
-                urlController controller = new urlController(urlService, kafkaTemplate, objectMapper);
+        when(request.getHeader("X-Forwarded-For"))
+                .thenReturn("192.168.1.100");
 
-                when(urlService.resolveLongUrl("abc")).thenReturn("https://google.com");
-                when(request.getHeader("X-Forwarded-For")).thenReturn(null);
-                when(request.getRemoteAddr()).thenReturn("10.0.0.1");
-                when(request.getHeader("User-Agent")).thenReturn("Chrome");
+        when(request.getHeader("User-Agent"))
+                .thenReturn("Mozilla/5.0");
 
-                // Simulate Kafka failure
-                when(kafkaTemplate.send(anyString(), anyString(), anyString()))
-                        .thenThrow(new RuntimeException("Kafka broker unavailable"));
+        controller.getLongURLByShortURL(
+                "abc",
+                request
+        );
 
-                // Redirect should still succeed despite Kafka failure
-                ResponseEntity<Void> response = controller.getLongURLByShortURL("abc", request);
-                assertThat(response.getStatusCode()).isEqualTo(HttpStatus.FOUND);
-                assertThat(response.getHeaders().getLocation()).hasToString("https://google.com");
-        }
+        verify(kafkaTemplate)
+                .send(
+                        eq(KafkaConfig.CLICK_EVENTS_TOPIC),
+                        eq("abc"),
+                        contains("\"shortUrl\":\"abc\"")
+                );
+    }
 
-        @Test
-        void createShortURL_returnsCreatedOnSuccess() {
-                UrlService urlService = Mockito.mock(UrlService.class);
-                KafkaTemplate<String, String> kafkaTemplate = mockKafkaTemplate();
-                urlController controller = new urlController(urlService, kafkaTemplate, objectMapper);
+    @Test
+    void getLongURLByShortURL_returnsGoneWhenExpired() {
+        doThrow(
+                new UrlExpiredException("expired")
+        )
+        .when(urlService)
+        .resolveLongUrl("expired");
 
-                URLResponse response = URLResponse.builder()
-                                .shortUrl("http://localhost:8080/api/urls/code")
-                                .shortCode("code")
+        ResponseEntity<Void> response =
+                controller.getLongURLByShortURL(
+                        "expired",
+                        request
+                );
+
+        assertThat(response.getStatusCode())
+                .isEqualTo(HttpStatus.GONE);
+
+        verifyNoInteractions(kafkaTemplate);
+    }
+
+    @Test
+    void getLongURLByShortURL_returnsNotFoundWhenMissing() {
+        doThrow(
+                new UrlNotFoundException("missing")
+        )
+        .when(urlService)
+        .resolveLongUrl("missing");
+
+        ResponseEntity<Void> response =
+                controller.getLongURLByShortURL(
+                        "missing",
+                        request
+                );
+
+        assertThat(response.getStatusCode())
+                .isEqualTo(HttpStatus.NOT_FOUND);
+
+        verifyNoInteractions(kafkaTemplate);
+    }
+
+    @Test
+    void getLongURLByShortURL_redirectsEvenWhenKafkaFails() {
+        when(urlService.resolveLongUrl("abc"))
+                .thenReturn("https://example.com");
+
+        when(request.getHeader("X-Forwarded-For"))
+                .thenReturn(null);
+
+        when(request.getRemoteAddr())
+                .thenReturn("10.0.0.1");
+
+        when(request.getHeader("User-Agent"))
+                .thenReturn("Chrome");
+
+        when(
+                kafkaTemplate.send(
+                        anyString(),
+                        anyString(),
+                        anyString()
+                )
+        )
+        .thenThrow(
+                new RuntimeException("Kafka unavailable")
+        );
+
+        ResponseEntity<Void> response =
+                controller.getLongURLByShortURL(
+                        "abc",
+                        request
+                );
+
+        assertThat(response.getStatusCode())
+                .isEqualTo(HttpStatus.FOUND);
+
+        assertThat(response.getHeaders().getLocation())
+                .hasToString("https://example.com");
+    }
+
+    // -------------------------------------------------------------------------
+    // GET /api/urls/{shortUrl}/analytics
+    // -------------------------------------------------------------------------
+
+    @Test
+    void getAnalytics_returnsAnalyticsForCurrentOwner() {
+        AnalyticsResponse analytics =
+                AnalyticsResponse.builder()
+                        .shortUrl("abc")
+                        .totalClicks(10)
+                        .recentClicks(List.of())
+                        .build();
+
+        when(analyticsService.getStats(
+                "abc",
+                testUser
+        )).thenReturn(analytics);
+
+        ResponseEntity<AnalyticsResponse> response =
+                controller.getAnalytics("abc", authentication);
+
+        assertThat(response.getStatusCode())
+                .isEqualTo(HttpStatus.OK);
+
+        assertThat(response.getBody())
+                .isSameAs(analytics);
+
+        verify(analyticsService)
+                .getStats(
+                        "abc",
+                        testUser
+                );
+    }
+
+    @Test
+    void getAnalytics_returnsNotFoundWhenUrlDoesNotBelongToCurrentOwner() {
+        when(analyticsService.getStats(
+                "private",
+                testUser
+        ))
+        .thenThrow(
+                new UrlNotFoundException("Short URL not found")
+        );
+
+        ResponseEntity<AnalyticsResponse> response =
+                controller.getAnalytics("private", authentication);
+
+        assertThat(response.getStatusCode())
+                .isEqualTo(HttpStatus.NOT_FOUND);
+    }
+
+    // -------------------------------------------------------------------------
+    // GET /api/urls/{shortUrl}/details
+    // -------------------------------------------------------------------------
+
+    @Test
+    void getUrlDetails_returnsDetailsForCurrentOwner() {
+        URLResponse details =
+                URLResponse.builder()
+                        .shortCode("abc")
+                        .shortUrl("http://localhost:8080/api/urls/abc")
+                        .longUrl("https://example.com")
+                        .active(true)
+                        .clicks(5)
+                        .build();
+
+        when(urlService.getUrlDetails(
+                "abc",
+                testUser
+        )).thenReturn(details);
+
+        ResponseEntity<URLResponse> response =
+                controller.getUrlDetails("abc", authentication);
+
+        assertThat(response.getStatusCode())
+                .isEqualTo(HttpStatus.OK);
+
+        assertThat(response.getBody())
+                .isSameAs(details);
+
+        verify(urlService)
+                .getUrlDetails(
+                        "abc",
+                        testUser
+                );
+    }
+
+    @Test
+    void getUrlDetails_returnsNotFoundWhenUrlDoesNotBelongToCurrentOwner() {
+        when(urlService.getUrlDetails(
+                "private",
+                testUser
+        ))
+        .thenThrow(
+                new UrlNotFoundException("Short URL not found")
+        );
+
+        ResponseEntity<URLResponse> response =
+                controller.getUrlDetails("private", authentication);
+
+        assertThat(response.getStatusCode())
+                .isEqualTo(HttpStatus.NOT_FOUND);
+    }
+
+    // -------------------------------------------------------------------------
+    // GET /api/urls
+    // -------------------------------------------------------------------------
+
+    @Test
+    void getRecentUrls_returnsOnlyCurrentUsersUrls() {
+        List<URLResponse> urls =
+                List.of(
+                        URLResponse.builder()
+                                .shortCode("abc")
                                 .longUrl("https://example.com")
-                                .build();
+                                .active(true)
+                                .build()
+                );
 
-                when(urlService.createShortUrl(any(URLRequest.class))).thenReturn(response);
+        when(urlService.getRecentUrls(testUser))
+                .thenReturn(urls);
 
-                URLRequest request = new URLRequest();
-                request.setLongUrl("https://example.com");
+        ResponseEntity<List<URLResponse>> response =
+                controller.getRecentUrls(authentication);
 
-                ResponseEntity<URLResponse> resp = controller.createShortURL(request);
+        assertThat(response.getStatusCode())
+                .isEqualTo(HttpStatus.OK);
 
-                assertThat(resp.getStatusCode()).isEqualTo(HttpStatus.CREATED);
-                assertThat(resp.getBody()).isNotNull();
-                assertThat(resp.getBody().getShortCode()).isEqualTo("code");
-        }
+        assertThat(response.getBody())
+                .containsExactlyElementsOf(urls);
 
-        @Test
-        void createShortURL_returnsConflictOnAliasExists() {
-                UrlService urlService = Mockito.mock(UrlService.class);
-                KafkaTemplate<String, String> kafkaTemplate = mockKafkaTemplate();
-                urlController controller = new urlController(urlService, kafkaTemplate, objectMapper);
+        verify(urlService)
+                .getRecentUrls(testUser);
+    }
 
-                Mockito.doThrow(new AliasAlreadyExistsException("alias exists"))
-                                .when(urlService).createShortUrl(any(URLRequest.class));
+    // -------------------------------------------------------------------------
+    // POST /api/urls
+    // -------------------------------------------------------------------------
 
-                URLRequest request = new URLRequest();
-                request.setLongUrl("https://example.com");
-                request.setCustomAlias("alias");
+    @Test
+    void createShortURL_createsUrlForCurrentOwner() {
+        URLRequest request = new URLRequest();
+        request.setLongUrl("https://example.com");
 
-                ResponseEntity<URLResponse> resp = controller.createShortURL(request);
+        URLResponse created =
+                URLResponse.builder()
+                        .shortCode("abc")
+                        .shortUrl("http://localhost:8080/api/urls/abc")
+                        .longUrl("https://example.com")
+                        .active(true)
+                        .build();
 
-                assertThat(resp.getStatusCode()).isEqualTo(HttpStatus.CONFLICT);
-        }
+        when(urlService.createShortUrl(
+                request,
+                testUser
+        )).thenReturn(created);
+
+        ResponseEntity<URLResponse> response =
+                controller.createShortURL(request, authentication);
+
+        assertThat(response.getStatusCode())
+                .isEqualTo(HttpStatus.CREATED);
+
+        assertThat(response.getBody())
+                .isSameAs(created);
+
+        verify(urlService)
+                .createShortUrl(
+                        request,
+                        testUser
+                );
+    }
+
+    @Test
+    void createShortURL_returnsConflictWhenAliasExists() {
+        URLRequest request = new URLRequest();
+        request.setLongUrl("https://example.com");
+        request.setCustomAlias("taken");
+
+        when(urlService.createShortUrl(
+                request,
+                testUser
+        ))
+        .thenThrow(
+                new AliasAlreadyExistsException("taken")
+        );
+
+        ResponseEntity<URLResponse> response =
+                controller.createShortURL(request, authentication);
+
+        assertThat(response.getStatusCode())
+                .isEqualTo(HttpStatus.CONFLICT);
+
+        assertThat(response.getBody())
+                .isNotNull();
+
+        assertThat(response.getBody().getShortUrl())
+                .isEqualTo("error");
+    }
 }

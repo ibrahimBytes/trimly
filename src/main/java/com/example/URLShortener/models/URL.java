@@ -45,4 +45,13 @@ public class URL {
     @Column(name = "active", nullable = false)
     @Default
     private boolean active = true;
+
+    @ManyToOne(fetch = FetchType.LAZY)
+    @JoinColumn(
+            name = "owner_id",
+            foreignKey = @ForeignKey(
+                    name = "fk_urls_owner"
+            )
+    )
+    private User owner;
 }

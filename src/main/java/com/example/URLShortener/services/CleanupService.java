@@ -22,38 +22,99 @@ public class CleanupService {
     private final ClickEventRepository clickEventRepository;
     private final StringRedisTemplate redisTemplate;
 
-    // Run every hour at minute 0
+    /**
+     * Remove URLs whose expiration time has passed.
+     *
+     * Runs once every hour.
+     *
+     * Cleanup removes:
+     *
+     * 1. Click events belonging to the URL.
+     * 2. The URL itself.
+     * 3. The global short-code Redis mapping.
+     * 4. The owner-scoped long-URL Redis mapping.
+     *
+     * Legacy URLs with no owner only have the global short-code
+     * mapping removed.
+     */
     @Scheduled(cron = "0 0 * * * *")
     @Transactional
     public void cleanupExpiredUrls() {
-        log.info("Starting background cleanup of expired URLs");
-        LocalDateTime now = LocalDateTime.now();
-        
-        List<URL> expiredUrls = urlRepository.findByExpiresAtBefore(now);
-        
+
+        log.info(
+                "Starting background cleanup of expired URLs"
+        );
+
+        LocalDateTime now =
+                LocalDateTime.now();
+
+        List<URL> expiredUrls =
+                urlRepository.findByExpiresAtBefore(now);
+
         if (expiredUrls.isEmpty()) {
-            log.info("No expired URLs found to clean up.");
+
+            log.info(
+                    "No expired URLs found to clean up."
+            );
+
             return;
         }
 
-        int count = 0;
+        int cleanedCount = 0;
+
         for (URL url : expiredUrls) {
-            String shortCode = url.getShortUrl();
-            String longUrl = url.getLongUrl();
 
-            // 1. Delete associated analytics
-            clickEventRepository.deleteByShortUrl(shortCode);
+            String shortCode =
+                    url.getShortUrl();
 
-            // 2. Delete the URL
+            String longUrl =
+                    url.getLongUrl();
+
+            /*
+             * Delete analytics first.
+             *
+             * ClickEvent stores the short code rather than a direct
+             * foreign-key relationship to URL.
+             */
+            clickEventRepository.deleteByShortUrl(
+                    shortCode
+            );
+
+            /*
+             * Delete the URL itself.
+             */
             urlRepository.delete(url);
 
-            // 3. Purge from Redis Cache
-            redisTemplate.delete("short:" + shortCode);
-            redisTemplate.delete("long:" + longUrl);
-            
-            count++;
+            /*
+             * Remove global short-code cache.
+             */
+            redisTemplate.delete(
+                    "short:" + shortCode
+            );
+
+            /*
+             * Remove owner-scoped long-url cache.
+             *
+             * Legacy URLs have owner == null and therefore do not
+             * have an owner-scoped long-url mapping.
+             */
+            if (url.getOwner() != null
+                    && url.getOwner().getId() != null) {
+
+                redisTemplate.delete(
+                        "long:user:"
+                                + url.getOwner().getId()
+                                + ":"
+                                + longUrl
+                );
+            }
+
+            cleanedCount++;
         }
 
-        log.info("Successfully cleaned up {} expired URLs and their associated analytics.", count);
+        log.info(
+                "Successfully cleaned up {} expired URLs and their associated analytics.",
+                cleanedCount
+        );
     }
 }

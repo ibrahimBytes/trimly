@@ -1,0 +1,1725 @@
+
+===== URL.java =====
+package com.example.URLShortener.models;
+
+import jakarta.persistence.*;
+import lombok.AllArgsConstructor;
+import lombok.Builder;
+import lombok.Data;
+import lombok.NoArgsConstructor;
+import lombok.Builder.Default;
+import org.springframework.data.annotation.CreatedDate;
+import org.springframework.data.annotation.LastModifiedDate;
+import org.springframework.data.jpa.domain.support.AuditingEntityListener;
+
+import java.time.LocalDateTime;
+
+@Entity
+@Data
+@Builder
+@Table(name = "urls")
+@NoArgsConstructor
+@AllArgsConstructor
+@EntityListeners(AuditingEntityListener.class)
+public class URL {
+
+    @Id
+    @GeneratedValue(strategy = GenerationType.IDENTITY)
+    private Integer id;
+
+    @Column(nullable = false, length = 2048)
+    private String longUrl;
+
+    @Column(unique = true, length = 8)
+    private String shortUrl;
+
+    @CreatedDate
+    @Column(name = "created_at")
+    private LocalDateTime createdAt;
+
+    @LastModifiedDate
+    @Column(name = "updated_at")
+    private LocalDateTime updatedAt;
+
+    @Column(name = "expires_at")
+    private LocalDateTime expiresAt;
+
+    @Column(name = "active", nullable = false)
+    @Default
+    private boolean active = true;
+
+    @ManyToOne(fetch = FetchType.LAZY)
+    @JoinColumn(
+            name = "owner_id",
+            foreignKey = @ForeignKey(
+                    name = "fk_urls_owner"
+            )
+    )
+    private User owner;
+}
+===== UrlRepository.java =====
+// src/main/java/com/example/URLShortener/repository/UserRepository.java
+package com.example.URLShortener.repository;
+
+import com.example.URLShortener.models.URL;
+import org.springframework.data.jpa.repository.JpaRepository;
+
+import java.util.List;
+import java.util.Optional;
+
+public interface UrlRepository extends JpaRepository<URL, Integer> {
+
+    Optional<URL> findByShortUrl(String shortUrl);
+
+    Optional<URL> findByShortUrlAndActiveTrue(String shortUrl);
+
+    Optional<URL> findByLongUrlAndActiveTrue(String longUrl);
+
+    boolean existsByShortUrl(String shortUrl);
+
+    List<URL> findByExpiresAtBefore(java.time.LocalDateTime now);
+
+    List<URL> findTop20ByOrderByCreatedAtDesc();
+
+
+}
+===== UrlService.java =====
+package com.example.URLShortener.services;
+
+import com.example.URLShortener.dto.URLRequest;
+import com.example.URLShortener.dto.URLResponse;
+import com.example.URLShortener.models.URL;
+import com.example.URLShortener.repository.ClickEventRepository;
+import com.example.URLShortener.repository.UrlRepository;
+import lombok.RequiredArgsConstructor;
+import org.springframework.beans.factory.annotation.Value;
+import org.springframework.data.redis.core.StringRedisTemplate;
+import org.springframework.stereotype.Service;
+import org.springframework.transaction.annotation.Transactional;
+
+import java.time.Duration;
+import java.time.LocalDateTime;
+import java.util.HashMap;
+import java.util.List;
+import java.util.Map;
+import java.util.Optional;
+
+@Service
+@RequiredArgsConstructor
+public class UrlService {
+
+    private static final Duration CACHE_TTL =
+            Duration.ofMinutes(5);
+
+    private final UrlRepository urlRepository;
+    private final ClickEventRepository clickEventRepository;
+    private final StringRedisTemplate redisTemplate;
+
+    /*
+     * Example:
+     *
+     * app.base-url=http://localhost:8080/api/urls
+     *
+     * Result:
+     *
+     * http://localhost:8080/api/urls/3
+     */
+    @Value("${app.base-url:http://localhost:8080/api/urls}")
+    private String baseUrl;
+
+
+    // ============================================================
+    // CREATE SHORT URL
+    // ============================================================
+
+    @Transactional
+    public URLResponse createShortUrl(URLRequest request) {
+
+        String longUrl = request.getLongUrl();
+        LocalDateTime expirationTime =
+                request.getExpirationTime();
+
+
+        // ========================================================
+        // REDIS LOOKUP
+        // ========================================================
+
+        /*
+         * Check whether this long URL already has an active
+         * short URL.
+         *
+         * Redis is only used as a fast lookup.
+         * PostgreSQL remains the source of truth.
+         */
+        String cachedShortCode =
+                redisTemplate.opsForValue()
+                        .get(longKey(longUrl));
+
+        if (cachedShortCode != null) {
+
+            Optional<URL> existingOptional =
+                    urlRepository.findByShortUrlAndActiveTrue(
+                            cachedShortCode
+                    );
+
+            if (existingOptional.isPresent()) {
+
+                URL existing = existingOptional.get();
+
+                if (isExpired(existing)) {
+
+                    deactivate(existing);
+
+                    evictCache(
+                            existing.getShortUrl(),
+                            existing.getLongUrl()
+                    );
+
+                } else {
+
+                    return toResponse(existing);
+                }
+
+            } else {
+
+                /*
+                 * Redis contains stale data.
+                 */
+                redisTemplate.delete(
+                        longKey(longUrl)
+                );
+            }
+        }
+
+
+        // ========================================================
+        // CUSTOM ALIAS VALIDATION
+        // ========================================================
+
+        String desiredShortCode =
+                request.getCustomAlias();
+
+        if (desiredShortCode != null
+                && !desiredShortCode.isBlank()) {
+
+            desiredShortCode =
+                    desiredShortCode.trim();
+
+            if (urlRepository.existsByShortUrl(
+                    desiredShortCode
+            )) {
+
+                throw new AliasAlreadyExistsException(
+                        "Custom alias already exists: "
+                                + desiredShortCode
+                );
+            }
+        }
+
+
+        // ========================================================
+        // DETERMINE CREATION MODE
+        // ========================================================
+
+        boolean hasCustomAlias =
+                desiredShortCode != null
+                        && !desiredShortCode.isBlank();
+
+
+        // ========================================================
+        // CREATE ENTITY
+        // ========================================================
+
+        /*
+         * For a custom alias:
+         *
+         *     shortUrl = requested alias
+         *
+         * For an automatically generated alias:
+         *
+         *     shortUrl = null
+         *
+         * PostgreSQL generates the ID during the INSERT.
+         * We then use that ID to generate the Base62 code.
+         *
+         * This is important because short_url is VARCHAR(8).
+         *
+         * We must NOT insert values such as:
+         *
+         *     TEMP-123456789
+         *
+         * because they exceed the database constraint.
+         */
+        URL url = URL.builder()
+                .longUrl(longUrl)
+                .expiresAt(expirationTime)
+                .active(true)
+                .shortUrl(
+                        hasCustomAlias
+                                ? desiredShortCode
+                                : null
+                )
+                .build();
+
+
+        // ========================================================
+        // FIRST SAVE
+        // ========================================================
+
+        /*
+         * PostgreSQL generates the primary key here.
+         */
+        URL saved =
+                urlRepository.save(url);
+
+
+        // ========================================================
+        // GENERATE SHORT CODE
+        // ========================================================
+
+        String shortCode;
+
+        if (hasCustomAlias) {
+
+            /*
+             * Custom alias was already persisted.
+             */
+            shortCode =
+                    desiredShortCode;
+
+        } else {
+
+            /*
+             * The database must have generated an ID.
+             */
+            if (saved.getId() == null) {
+
+                throw new IllegalStateException(
+                        "Database did not generate an ID "
+                                + "for the URL"
+                );
+            }
+
+            shortCode =
+                    Base62Encoder.encode(
+                            saved.getId()
+                    );
+
+            /*
+             * Make sure our generated code respects the
+             * database's VARCHAR(8) constraint.
+             */
+            if (shortCode.length() > 8) {
+
+                throw new IllegalStateException(
+                        "Generated short code exceeds "
+                                + "the maximum length of 8 characters: "
+                                + shortCode
+                );
+            }
+
+            saved.setShortUrl(shortCode);
+        }
+
+
+        // ========================================================
+        // FINAL SAVE
+        // ========================================================
+
+        URL finalEntity;
+
+        if (hasCustomAlias) {
+
+            /*
+             * Custom alias was already stored during the first
+             * INSERT, so no second save is required.
+             */
+            finalEntity = saved;
+
+        } else {
+
+            /*
+             * Persist the Base62 code generated from the
+             * database ID.
+             */
+            finalEntity =
+                    urlRepository.save(saved);
+        }
+
+
+        // ========================================================
+        // CACHE
+        // ========================================================
+
+        cacheMapping(finalEntity);
+
+
+        // ========================================================
+        // LOG
+        // ========================================================
+
+        System.out.println(
+                "UrlService.createShortUrl shortCode: "
+                        + shortCode
+        );
+
+
+        // ========================================================
+        // RESPONSE
+        // ========================================================
+
+        return toResponse(finalEntity);
+    }
+
+
+    // ============================================================
+    // GET RECENT URLS
+    // ============================================================
+
+    /**
+     * Returns the latest 20 URLs ordered by creation time.
+     *
+     * Click counts are retrieved with one grouped query instead
+     * of executing one query per URL.
+     */
+    @Transactional
+    public List<URLResponse> getRecentUrls() {
+
+        List<URL> urls =
+                urlRepository.findTop20ByOrderByCreatedAtDesc();
+
+
+        // ========================================================
+        // NO URLS
+        // ========================================================
+
+        if (urls.isEmpty()) {
+            return List.of();
+        }
+
+
+        // ========================================================
+        // EXTRACT SHORT CODES
+        // ========================================================
+
+        List<String> shortCodes =
+                urls.stream()
+                        .map(URL::getShortUrl)
+                        .toList();
+
+
+        // ========================================================
+        // FETCH CLICK COUNTS
+        // ========================================================
+
+        Map<String, Long> clickCounts =
+                new HashMap<>();
+
+        List<Object[]> rows =
+                clickEventRepository
+                        .countClicksByShortUrls(
+                                shortCodes
+                        );
+
+
+        for (Object[] row : rows) {
+
+            String shortCode =
+                    (String) row[0];
+
+            /*
+             * COUNT() normally returns Long, but Number makes
+             * this robust across JPA/database implementations.
+             */
+            long count =
+                    ((Number) row[1]).longValue();
+
+            clickCounts.put(
+                    shortCode,
+                    count
+            );
+        }
+
+
+        // ========================================================
+        // BUILD RESPONSES
+        // ========================================================
+
+        return urls.stream()
+                .map(url -> {
+
+                    boolean expired =
+                            isExpired(url);
+
+
+                    /*
+                     * Automatically deactivate expired URLs.
+                     */
+                    if (expired && url.isActive()) {
+
+                        deactivate(url);
+                    }
+
+
+                    boolean active =
+                            url.isActive()
+                                    && !expired;
+
+
+                    long clicks =
+                            clickCounts.getOrDefault(
+                                    url.getShortUrl(),
+                                    0L
+                            );
+
+
+                    return URLResponse.builder()
+                            .shortUrl(
+                                    buildShortUrl(
+                                            url.getShortUrl()
+                                    )
+                            )
+                            .shortCode(
+                                    url.getShortUrl()
+                            )
+                            .longUrl(
+                                    url.getLongUrl()
+                            )
+                            .expirationTime(
+                                    url.getExpiresAt()
+                            )
+                            .createdAt(
+                                    url.getCreatedAt()
+                            )
+                            .active(active)
+                            .clicks(clicks)
+                            .build();
+                })
+                .toList();
+    }
+
+
+    // ============================================================
+    // RESOLVE SHORT URL
+    // ============================================================
+
+    @Transactional
+    public String resolveLongUrl(
+            String shortCode
+    ) {
+
+        // ========================================================
+        // REDIS LOOKUP
+        // ========================================================
+
+        String cachedLong =
+                redisTemplate.opsForValue()
+                        .get(shortKey(shortCode));
+
+
+        if (cachedLong != null) {
+
+            /*
+             * Redis is a cache.
+             *
+             * The database remains authoritative for:
+             *
+             *     - existence
+             *     - active state
+             *     - expiration
+             */
+            Optional<URL> optionalUrl =
+                    urlRepository
+                            .findByShortUrlAndActiveTrue(
+                                    shortCode
+                            );
+
+
+            if (optionalUrl.isPresent()) {
+
+                URL url =
+                        optionalUrl.get();
+
+
+                if (isExpired(url)) {
+
+                    deactivate(url);
+
+                    evictCache(
+                            shortCode,
+                            cachedLong
+                    );
+
+                    throw new UrlExpiredException(
+                            "Short URL has expired: "
+                                    + shortCode
+                    );
+                }
+
+            } else {
+
+                /*
+                 * Redis contains stale data.
+                 */
+                redisTemplate.delete(
+                        shortKey(shortCode)
+                );
+
+                throw new UrlNotFoundException(
+                        "Short URL not found: "
+                                + shortCode
+                );
+            }
+
+
+            return cachedLong;
+        }
+
+
+        // ========================================================
+        // DATABASE LOOKUP
+        // ========================================================
+
+        Optional<URL> optionalUrl =
+                urlRepository
+                        .findByShortUrlAndActiveTrue(
+                                shortCode
+                        );
+
+
+        URL url =
+                optionalUrl.orElseThrow(
+                        () -> new UrlNotFoundException(
+                                "Short URL not found: "
+                                        + shortCode
+                        )
+                );
+
+
+        // ========================================================
+        // EXPIRATION CHECK
+        // ========================================================
+
+        if (isExpired(url)) {
+
+            deactivate(url);
+
+            throw new UrlExpiredException(
+                    "Short URL has expired: "
+                            + shortCode
+            );
+        }
+
+
+        // ========================================================
+        // REBUILD REDIS CACHE
+        // ========================================================
+
+        cacheMapping(url);
+
+
+        return url.getLongUrl();
+    }
+
+
+    // ============================================================
+    // RESPONSE MAPPING
+    // ============================================================
+
+    private URLResponse toResponse(
+            URL url
+    ) {
+
+        String shortCode =
+                url.getShortUrl();
+
+
+        return URLResponse.builder()
+                .shortUrl(
+                        buildShortUrl(shortCode)
+                )
+                .shortCode(shortCode)
+                .longUrl(url.getLongUrl())
+                .expirationTime(
+                        url.getExpiresAt()
+                )
+                .createdAt(
+                        url.getCreatedAt()
+                )
+                .active(
+                        url.isActive()
+                )
+                /*
+                 * A newly created URL has no click events yet.
+                 */
+                .clicks(0)
+                .build();
+    }
+
+
+    // ============================================================
+    // BUILD FULL SHORT URL
+    // ============================================================
+
+    private String buildShortUrl(
+            String shortCode
+    ) {
+
+        if (baseUrl.endsWith("/")) {
+
+            return baseUrl + shortCode;
+        }
+
+        return baseUrl + "/" + shortCode;
+    }
+
+
+    // ============================================================
+    // REDIS SHORT KEY
+    // ============================================================
+
+    private String shortKey(
+            String shortCode
+    ) {
+
+        return "short:" + shortCode;
+    }
+
+
+    // ============================================================
+    // REDIS LONG URL KEY
+    // ============================================================
+
+    private String longKey(
+            String longUrl
+    ) {
+
+        return "long:" + longUrl;
+    }
+
+
+    // ============================================================
+    // CACHE MAPPING
+    // ============================================================
+
+    private void cacheMapping(
+            URL url
+    ) {
+
+        if (!url.isActive()) {
+            return;
+        }
+
+
+        String shortCode =
+                url.getShortUrl();
+
+        String longUrl =
+                url.getLongUrl();
+
+
+        // --------------------------------------------------------
+        // short code → long URL
+        // --------------------------------------------------------
+
+        redisTemplate.opsForValue().set(
+                shortKey(shortCode),
+                longUrl,
+                CACHE_TTL
+        );
+
+
+        // --------------------------------------------------------
+        // long URL → short code
+        // --------------------------------------------------------
+
+        redisTemplate.opsForValue().set(
+                longKey(longUrl),
+                shortCode,
+                CACHE_TTL
+        );
+    }
+
+
+    // ============================================================
+    // EXPIRATION
+    // ============================================================
+
+    private boolean isExpired(
+            URL url
+    ) {
+
+        LocalDateTime expiresAt =
+                url.getExpiresAt();
+
+
+        return expiresAt != null
+                && LocalDateTime.now()
+                .isAfter(expiresAt);
+    }
+
+
+    // ============================================================
+    // DEACTIVATE
+    // ============================================================
+
+    private void deactivate(
+            URL url
+    ) {
+
+        if (url.isActive()) {
+
+            url.setActive(false);
+
+            urlRepository.save(url);
+        }
+    }
+
+
+    // ============================================================
+    // EVICT REDIS CACHE
+    // ============================================================
+
+    private void evictCache(
+            String shortCode,
+            String longUrl
+    ) {
+
+        redisTemplate.delete(
+                shortKey(shortCode)
+        );
+
+        redisTemplate.delete(
+                longKey(longUrl)
+        );
+    }
+
+
+    // ============================================================
+    // EXCEPTIONS
+    // ============================================================
+
+    public static class AliasAlreadyExistsException
+            extends RuntimeException {
+
+        public AliasAlreadyExistsException(
+                String message
+        ) {
+
+            super(message);
+        }
+    }
+
+
+    public static class UrlNotFoundException
+            extends RuntimeException {
+
+        public UrlNotFoundException(
+                String message
+        ) {
+
+            super(message);
+        }
+    }
+
+
+    @Transactional(readOnly = true)
+    public URLResponse getUrlDetails(String shortCode) {
+
+        URL url = urlRepository
+                .findByShortUrl(shortCode)
+                .orElseThrow(
+                        () -> new UrlNotFoundException(
+                                "Short URL not found: " + shortCode
+                        )
+                );
+
+        boolean expired = isExpired(url);
+
+        if (expired && url.isActive()) {
+            deactivate(url);
+        }
+
+        long clicks =
+                clickEventRepository.countByShortUrl(shortCode);
+
+        return URLResponse.builder()
+                .shortUrl(buildShortUrl(shortCode))
+                .shortCode(shortCode)
+                .longUrl(url.getLongUrl())
+                .expirationTime(url.getExpiresAt())
+                .createdAt(url.getCreatedAt())
+                .active(url.isActive() && !expired)
+                .clicks(clicks)
+                .build();
+    }
+    public static class UrlExpiredException
+            extends RuntimeException {
+
+        public UrlExpiredException(
+                String message
+        ) {
+
+            super(message);
+        }
+    }
+}
+===== AnalyticsService.java =====
+package com.example.URLShortener.services;
+
+import com.example.URLShortener.dto.AnalyticsDashboardResponse;
+import com.example.URLShortener.dto.AnalyticsResponse;
+import com.example.URLShortener.models.ClickEvent;
+import com.example.URLShortener.models.URL;
+import com.example.URLShortener.repository.ClickEventRepository;
+import com.example.URLShortener.repository.UrlRepository;
+import jakarta.servlet.http.HttpServletRequest;
+import lombok.RequiredArgsConstructor;
+import org.springframework.stereotype.Service;
+import org.springframework.transaction.annotation.Transactional;
+
+import java.time.LocalDate;
+import java.time.LocalDateTime;
+import java.time.format.DateTimeFormatter;
+import java.util.ArrayList;
+import java.util.Comparator;
+import java.util.HashMap;
+import java.util.List;
+import java.util.Map;
+import java.util.Objects;
+import java.util.stream.Collectors;
+
+@Service
+@RequiredArgsConstructor
+public class AnalyticsService {
+
+    private final ClickEventRepository clickEventRepository;
+    private final UrlRepository urlRepository;
+
+    private static final DateTimeFormatter FORMATTER =
+            DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss");
+
+
+
+    private static final DateTimeFormatter CHART_DATE_FORMATTER =
+            DateTimeFormatter.ISO_LOCAL_DATE;
+    // -------------------------------------------------------------------------
+    // Record click
+    // -------------------------------------------------------------------------
+
+    @Transactional
+    public void recordClick(
+            String shortUrl,
+            HttpServletRequest request) {
+
+        String ipAddress =
+                request.getHeader("X-Forwarded-For");
+
+        if (ipAddress == null
+                || ipAddress.isEmpty()
+                || "unknown".equalsIgnoreCase(ipAddress)) {
+
+            ipAddress = request.getRemoteAddr();
+        }
+
+        String userAgent =
+                request.getHeader("User-Agent");
+
+        ClickEvent event =
+                ClickEvent.builder()
+                        .shortUrl(shortUrl)
+                        .ipAddress(ipAddress)
+                        .userAgent(userAgent)
+                        .clickedAt(LocalDateTime.now())
+                        .build();
+
+        clickEventRepository.save(event);
+    }
+
+    // -------------------------------------------------------------------------
+    // Analytics for one short URL
+    // -------------------------------------------------------------------------
+
+    @Transactional(readOnly = true)
+    public AnalyticsResponse getStats(
+            String shortUrl) {
+
+        urlRepository
+                .findByShortUrl(shortUrl)
+                .orElseThrow(
+                        () -> new UrlService.UrlNotFoundException(
+                                "Short URL not found: " + shortUrl
+                        )
+                );
+
+        long totalClicks =
+                clickEventRepository.countByShortUrl(shortUrl);
+
+        List<ClickEvent> recentEvents =
+                clickEventRepository
+                        .findByShortUrlOrderByClickedAtDesc(shortUrl);
+
+        List<AnalyticsResponse.ClickDetails> details =
+                recentEvents.stream()
+                        .limit(50)
+                        .map(event ->
+                                AnalyticsResponse.ClickDetails.builder()
+                                        .ipAddress(event.getIpAddress())
+                                        .userAgent(event.getUserAgent())
+                                        .clickedAt(
+                                                event.getClickedAt()
+                                                        .format(FORMATTER)
+                                        )
+                                        .build()
+                        )
+                        .collect(Collectors.toList());
+
+        return AnalyticsResponse.builder()
+                .shortUrl(shortUrl)
+                .totalClicks(totalClicks)
+                .recentClicks(details)
+                .build();
+    }
+
+    // -------------------------------------------------------------------------
+    // Dashboard analytics
+    // GET /api/analytics
+    // -------------------------------------------------------------------------
+
+    @Transactional(readOnly = true)
+    public AnalyticsDashboardResponse getDashboardAnalytics() {
+
+        LocalDate today =
+                LocalDate.now();
+
+        LocalDateTime start =
+                today
+                        .minusDays(29)
+                        .atStartOfDay();
+
+        LocalDateTime tomorrow =
+                today
+                        .plusDays(1)
+                        .atStartOfDay();
+
+        // ---------------------------------------------------------------------
+        // Total clicks
+        // ---------------------------------------------------------------------
+
+        long totalClicks =
+                clickEventRepository.count();
+
+        // ---------------------------------------------------------------------
+        // Clicks today
+        // ---------------------------------------------------------------------
+
+        long clicksToday =
+                clickEventRepository.countClicksBetween(
+                        today.atStartOfDay(),
+                        tomorrow
+                );
+
+        // ---------------------------------------------------------------------
+        // Links created
+        // ---------------------------------------------------------------------
+
+        long linksCreated =
+                urlRepository.count();
+
+        // ---------------------------------------------------------------------
+        // Daily clicks
+        // ---------------------------------------------------------------------
+
+        List<Object[]> dailyRows =
+                clickEventRepository.countClicksByDayBetween(
+                        start,
+                        tomorrow
+                );
+
+        Map<LocalDate, Long> clicksByDay =
+                new HashMap<>();
+
+        for (Object[] row : dailyRows) {
+
+            Object dateValue =
+                    row[0];
+
+            LocalDate date;
+
+            if (dateValue instanceof java.sql.Date sqlDate) {
+
+                date = sqlDate.toLocalDate();
+
+            } else if (dateValue instanceof LocalDate localDate) {
+
+                date = localDate;
+
+            } else {
+
+                date =
+                        LocalDate.parse(
+                                dateValue.toString()
+                        );
+            }
+
+            long count =
+                    ((Number) row[1]).longValue();
+
+            clicksByDay.put(
+                    date,
+                    count
+            );
+        }
+
+        List<AnalyticsDashboardResponse.DailyClick> dailyClicks =
+                new ArrayList<>();
+
+        LocalDate current =
+                start.toLocalDate();
+
+        while (!current.isAfter(today)) {
+
+            long clicks =
+                    clicksByDay.getOrDefault(
+                            current,
+                            0L
+                    );
+
+            dailyClicks.add(
+                    AnalyticsDashboardResponse.DailyClick.builder()
+                            .date(
+                                    current.format(
+                                            CHART_DATE_FORMATTER
+                                    )
+                            )
+                            .clicks(clicks)
+                            .build()
+            );
+
+            current =
+                    current.plusDays(1);
+        }
+
+        // ---------------------------------------------------------------------
+        // Top links
+        // ---------------------------------------------------------------------
+
+        List<URL> urls =
+                urlRepository.findAll();
+
+        List<String> shortCodes =
+                urls.stream()
+                        .map(URL::getShortUrl)
+                        .filter(Objects::nonNull)
+                        .toList();
+
+        /*
+         * Build the click-count map once.
+         *
+         * We use a final variable so it can safely be referenced
+         * from the stream below.
+         */
+        final Map<String, Long> clickCounts;
+
+        if (shortCodes.isEmpty()) {
+
+            clickCounts =
+                    Map.of();
+
+        } else {
+
+            clickCounts =
+                    clickEventRepository
+                            .countClicksByShortUrls(shortCodes)
+                            .stream()
+                            .collect(
+                                    Collectors.toMap(
+                                            row -> (String) row[0],
+                                            row -> ((Number) row[1])
+                                                    .longValue()
+                                    )
+                            );
+        }
+
+        List<AnalyticsDashboardResponse.TopLink> topLinks =
+                urls.stream()
+                        .filter(
+                                url ->
+                                        url.getShortUrl() != null
+                        )
+                        .map(
+                                url ->
+                                        AnalyticsDashboardResponse.TopLink
+                                                .builder()
+                                                .shortCode(
+                                                        url.getShortUrl()
+                                                )
+                                                .shortUrl(
+                                                        buildShortUrl(
+                                                                url.getShortUrl()
+                                                        )
+                                                )
+                                                .longUrl(
+                                                        url.getLongUrl()
+                                                )
+                                                .clicks(
+                                                        clickCounts
+                                                                .getOrDefault(
+                                                                        url.getShortUrl(),
+                                                                        0L
+                                                                )
+                                                )
+                                                .build()
+                        )
+                        .sorted(
+                                Comparator.comparingLong(
+                                        AnalyticsDashboardResponse.TopLink
+                                                ::getClicks
+                                ).reversed()
+                        )
+                        .limit(5)
+                        .toList();
+
+        // ---------------------------------------------------------------------
+        // Dashboard response
+        // ---------------------------------------------------------------------
+
+        return AnalyticsDashboardResponse.builder()
+                .totalClicks(totalClicks)
+                .clicksToday(clicksToday)
+                .linksCreated(linksCreated)
+                .dailyClicks(dailyClicks)
+                .topLinks(topLinks)
+                .build();
+    }
+
+    // -------------------------------------------------------------------------
+    // Short URL builder
+    // -------------------------------------------------------------------------
+
+    private String buildShortUrl(
+            String shortCode) {
+
+        return "http://localhost:8080/api/urls/"
+                + shortCode;
+    }
+}
+===== AnalyticsController.java =====
+package com.example.URLShortener.controllers;
+
+import com.example.URLShortener.dto.AnalyticsDashboardResponse;
+import com.example.URLShortener.services.AnalyticsService;
+import lombok.RequiredArgsConstructor;
+import org.springframework.http.ResponseEntity;
+import org.springframework.web.bind.annotation.GetMapping;
+import org.springframework.web.bind.annotation.RequestMapping;
+import org.springframework.web.bind.annotation.RestController;
+
+@RestController
+@RequestMapping("/api/analytics")
+@RequiredArgsConstructor
+public class AnalyticsController {
+
+    private final AnalyticsService analyticsService;
+
+    @GetMapping
+    public ResponseEntity<AnalyticsDashboardResponse>
+    getDashboardAnalytics() {
+
+        return ResponseEntity.ok(
+                analyticsService.getDashboardAnalytics()
+        );
+    }
+}
+===== ClickEvent.java =====
+package com.example.URLShortener.models;
+
+import jakarta.persistence.*;
+import lombok.*;
+import java.time.LocalDateTime;
+
+@Entity
+@Table(name = "click_events")
+@Getter
+@Setter
+@NoArgsConstructor
+@AllArgsConstructor
+@Builder
+public class ClickEvent {
+
+    @Id
+    @GeneratedValue(strategy = GenerationType.IDENTITY)
+    private Long id;
+
+    @Column(name = "short_url", nullable = false)
+    private String shortUrl;
+
+    @Column(name = "ip_address", length = 45)
+    private String ipAddress;
+
+    @Column(name = "user_agent")
+    private String userAgent;
+
+    @Column(name = "clicked_at", nullable = false)
+    private LocalDateTime clickedAt;
+}
+
+===== ClickEventRepository.java =====
+package com.example.URLShortener.repository;
+
+import com.example.URLShortener.models.ClickEvent;
+import org.springframework.data.jpa.repository.JpaRepository;
+import org.springframework.data.jpa.repository.Modifying;
+import org.springframework.data.jpa.repository.Query;
+import org.springframework.data.repository.query.Param;
+import org.springframework.stereotype.Repository;
+
+import java.time.LocalDateTime;
+import java.util.List;
+
+@Repository
+public interface ClickEventRepository
+        extends JpaRepository<ClickEvent, Long> {
+
+    // -------------------------------------------------------------------------
+    // Individual URL analytics
+    // -------------------------------------------------------------------------
+
+    List<ClickEvent> findByShortUrlOrderByClickedAtDesc(
+            String shortUrl
+    );
+
+    long countByShortUrl(
+            String shortUrl
+    );
+
+    // -------------------------------------------------------------------------
+    // Dashboard analytics
+    // -------------------------------------------------------------------------
+
+    /**
+     * Returns click counts grouped by short URL.
+     *
+     * Each row contains:
+     *   [0] short URL / short code
+     *   [1] click count
+     */
+    @Query("""
+            SELECT c.shortUrl, COUNT(c)
+            FROM ClickEvent c
+            WHERE c.shortUrl IN :shortUrls
+            GROUP BY c.shortUrl
+            """)
+    List<Object[]> countClicksByShortUrls(
+            @Param("shortUrls") List<String> shortUrls
+    );
+
+    /**
+     * Counts clicks inside a time range.
+     *
+     * start is inclusive.
+     * end is exclusive.
+     */
+    @Query("""
+            SELECT COUNT(c)
+            FROM ClickEvent c
+            WHERE c.clickedAt >= :start
+              AND c.clickedAt < :end
+            """)
+    long countClicksBetween(
+            @Param("start") LocalDateTime start,
+            @Param("end") LocalDateTime end
+    );
+
+    /**
+     * Returns click counts grouped by calendar day.
+     *
+     * PostgreSQL groups the click timestamps by date so the
+     * frontend can build the "Clicks over time" chart.
+     *
+     * Each row contains:
+     *   [0] calendar date
+     *   [1] click count
+     */
+    @Query(value = """
+            SELECT CAST(clicked_at AS DATE) AS click_date,
+                   COUNT(*) AS click_count
+            FROM click_events
+            WHERE clicked_at >= :start
+              AND clicked_at < :end
+            GROUP BY CAST(clicked_at AS DATE)
+            ORDER BY click_date
+            """,
+            nativeQuery = true)
+    List<Object[]> countClicksByDayBetween(
+            @Param("start") LocalDateTime start,
+            @Param("end") LocalDateTime end
+    );
+
+    // -------------------------------------------------------------------------
+    // Cleanup
+    // -------------------------------------------------------------------------
+
+    @Modifying
+    @Query("""
+            DELETE FROM ClickEvent c
+            WHERE c.shortUrl = :shortUrl
+            """)
+    void deleteByShortUrl(
+            @Param("shortUrl") String shortUrl
+    );
+}
+===== urlController.java =====
+package com.example.URLShortener.controllers;
+
+import com.example.URLShortener.config.KafkaConfig;
+import com.example.URLShortener.dto.AnalyticsResponse;
+import com.example.URLShortener.dto.ClickEventMessage;
+import com.example.URLShortener.dto.URLRequest;
+import com.example.URLShortener.dto.URLResponse;
+import com.example.URLShortener.services.AnalyticsService;
+import com.example.URLShortener.services.UrlService;
+import com.example.URLShortener.services.UrlService.AliasAlreadyExistsException;
+import com.example.URLShortener.services.UrlService.UrlExpiredException;
+import com.example.URLShortener.services.UrlService.UrlNotFoundException;
+import jakarta.servlet.http.HttpServletRequest;
+import jakarta.validation.Valid;
+import jakarta.validation.constraints.NotNull;
+import lombok.RequiredArgsConstructor;
+import lombok.extern.slf4j.Slf4j;
+import org.springframework.http.HttpStatus;
+import org.springframework.http.ResponseEntity;
+import org.springframework.kafka.core.KafkaTemplate;
+import org.springframework.web.bind.annotation.GetMapping;
+import org.springframework.web.bind.annotation.PathVariable;
+import org.springframework.web.bind.annotation.PostMapping;
+import org.springframework.web.bind.annotation.RequestBody;
+import org.springframework.web.bind.annotation.RequestMapping;
+import org.springframework.web.bind.annotation.RestController;
+import tools.jackson.databind.ObjectMapper;
+
+import java.net.URI;
+import java.time.LocalDateTime;
+import java.util.List;
+
+@Slf4j
+@RestController
+@RequestMapping("/api/urls")
+@RequiredArgsConstructor
+public class urlController {
+
+    private final UrlService urlService;
+    private final AnalyticsService analyticsService;
+    private final KafkaTemplate<String, String> kafkaTemplate;
+    private final ObjectMapper objectMapper;
+
+    /**
+     * Get the most recently created short URLs.
+     *
+     * GET /api/urls
+     */
+    @GetMapping
+    public ResponseEntity<List<URLResponse>> getRecentUrls() {
+        return ResponseEntity.ok(urlService.getRecentUrls());
+    }
+
+    /**
+     * Get analytics for a short URL.
+     *
+     * GET /api/urls/{shortUrl}/analytics
+     */
+    @GetMapping("/{shortUrl}/analytics")
+    public ResponseEntity<AnalyticsResponse> getAnalytics(
+            @PathVariable("shortUrl") String shortUrl) {
+
+        try {
+
+            AnalyticsResponse response =
+                    analyticsService.getStats(shortUrl);
+
+            return ResponseEntity.ok(response);
+
+        } catch (UrlNotFoundException e) {
+
+            log.debug(
+                    "Short URL not found while loading analytics: {}",
+                    shortUrl
+            );
+
+            return ResponseEntity
+                    .status(HttpStatus.NOT_FOUND)
+                    .build();
+        }
+    }
+
+    /**
+     * Get details for a short URL.
+     *
+     * GET /api/urls/{shortUrl}/details
+     */
+    @GetMapping("/{shortUrl}/details")
+    public ResponseEntity<URLResponse> getUrlDetails(
+            @PathVariable("shortUrl") String shortUrl) {
+
+        try {
+
+            URLResponse response =
+                    urlService.getUrlDetails(shortUrl);
+
+            return ResponseEntity.ok(response);
+
+        } catch (UrlNotFoundException e) {
+
+            log.debug(
+                    "Short URL not found while loading details: {}",
+                    shortUrl
+            );
+
+            return ResponseEntity
+                    .status(HttpStatus.NOT_FOUND)
+                    .build();
+        }
+    }
+
+    /**
+     * Resolve a short URL and redirect to the original destination.
+     *
+     * GET /api/urls/{shortUrl}
+     *
+     * A click event is published to Kafka asynchronously so that
+     * analytics persistence does not block the redirect.
+     */
+    @GetMapping("/{shortUrl}")
+    public ResponseEntity<Void> getLongURLByShortURL(
+            @NotNull @PathVariable("shortUrl") String shortUrl,
+            HttpServletRequest request) {
+
+        try {
+
+            String longUrl =
+                    urlService.resolveLongUrl(shortUrl);
+
+            /*
+             * Publish analytics event asynchronously.
+             *
+             * Kafka failure must never prevent the user from
+             * being redirected to the destination URL.
+             */
+            try {
+
+                ClickEventMessage clickEvent =
+                        ClickEventMessage.builder()
+                                .shortUrl(shortUrl)
+                                .ipAddress(resolveClientIp(request))
+                                .userAgent(
+                                        request.getHeader("User-Agent")
+                                )
+                                .clickedAt(LocalDateTime.now())
+                                .build();
+
+                String json =
+                        objectMapper.writeValueAsString(clickEvent);
+
+                kafkaTemplate.send(
+                        KafkaConfig.CLICK_EVENTS_TOPIC,
+                        shortUrl,
+                        json
+                );
+
+            } catch (Exception e) {
+
+                log.warn(
+                        "Failed to publish click event to Kafka for shortUrl={}: {}",
+                        shortUrl,
+                        e.getMessage()
+                );
+            }
+
+            return ResponseEntity
+                    .status(HttpStatus.FOUND)
+                    .location(URI.create(longUrl))
+                    .build();
+
+        } catch (UrlExpiredException e) {
+
+            log.debug(
+                    "Short URL expired: {}",
+                    shortUrl
+            );
+
+            return ResponseEntity
+                    .status(HttpStatus.GONE)
+                    .build();
+
+        } catch (UrlNotFoundException e) {
+
+            log.debug(
+                    "Short URL not found: {}",
+                    shortUrl
+            );
+
+            return ResponseEntity
+                    .status(HttpStatus.NOT_FOUND)
+                    .build();
+        }
+    }
+
+    /**
+     * Create a new short URL.
+     *
+     * POST /api/urls
+     */
+    @PostMapping
+    public ResponseEntity<URLResponse> createShortURL(
+            @Valid @RequestBody URLRequest urlRequest) {
+
+        try {
+
+            URLResponse response =
+                    urlService.createShortUrl(urlRequest);
+
+            return ResponseEntity
+                    .status(HttpStatus.CREATED)
+                    .body(response);
+
+        } catch (AliasAlreadyExistsException e) {
+
+            log.debug(
+                    "Custom alias already exists: {}",
+                    urlRequest.getCustomAlias()
+            );
+
+            return ResponseEntity
+                    .status(HttpStatus.CONFLICT)
+                    .body(
+                            URLResponse.builder()
+                                    .shortUrl("error")
+                                    .build()
+                    );
+        }
+    }
+
+    /**
+     * Resolve the real client IP address.
+     *
+     * When the application is behind a reverse proxy or load balancer,
+     * X-Forwarded-For may contain the original client address.
+     */
+    private String resolveClientIp(
+            HttpServletRequest request) {
+
+        String xForwardedFor =
+                request.getHeader("X-Forwarded-For");
+
+        if (xForwardedFor != null
+                && !xForwardedFor.isEmpty()
+                && !"unknown".equalsIgnoreCase(xForwardedFor)) {
+
+            return xForwardedFor
+                    .split(",")[0]
+                    .trim();
+        }
+
+        return request.getRemoteAddr();
+    }
+}
+===== SecurityConfig.java =====
+package com.example.URLShortener.config;
+
+import org.springframework.context.annotation.Bean;
+import org.springframework.context.annotation.Configuration;
+import org.springframework.http.HttpMethod;
+import org.springframework.security.config.annotation.web.builders.HttpSecurity;
+import org.springframework.security.config.annotation.web.configuration.EnableWebSecurity;
+import org.springframework.security.config.http.SessionCreationPolicy;
+import org.springframework.security.crypto.bcrypt.BCryptPasswordEncoder;
+import org.springframework.security.crypto.password.PasswordEncoder;
+import org.springframework.security.web.SecurityFilterChain;
+import org.springframework.security.web.authentication.UsernamePasswordAuthenticationFilter;
+
+@Configuration
+@EnableWebSecurity
+public class SecurityConfig {
+
+    private final JwtAuthenticationFilter jwtAuthenticationFilter;
+
+    public SecurityConfig(
+            JwtAuthenticationFilter jwtAuthenticationFilter) {
+
+        this.jwtAuthenticationFilter = jwtAuthenticationFilter;
+    }
+
+    @Bean
+    public SecurityFilterChain securityFilterChain(
+            HttpSecurity http) throws Exception {
+
+        http
+                .csrf(csrf -> csrf.disable())
+
+                .sessionManagement(session ->
+                        session.sessionCreationPolicy(
+                                SessionCreationPolicy.STATELESS
+                        )
+                )
+
+                .authorizeHttpRequests(auth -> auth
+
+                        // Authentication endpoints are public.
+                        .requestMatchers("/api/auth/**")
+                        .permitAll()
+
+                        // Public short-link redirect.
+                        .requestMatchers(
+                                HttpMethod.GET,
+                                "/api/urls/*"
+                        )
+                        .permitAll()
+
+                        // URL management.
+                        .requestMatchers(
+                                HttpMethod.GET,
+                                "/api/urls"
+                        )
+                        .authenticated()
+
+                        .requestMatchers(
+                                HttpMethod.POST,
+                                "/api/urls"
+                        )
+                        .authenticated()
+
+                        // Per-link details and analytics.
+                        .requestMatchers(
+                                "/api/urls/*/details"
+                        )
+                        .authenticated()
+
+                        .requestMatchers(
+                                "/api/urls/*/analytics"
+                        )
+                        .authenticated()
+
+                        // Dashboard analytics.
+                        .requestMatchers(
+                                "/api/analytics"
+                        )
+                        .authenticated()
+
+                        // Frontend/static/non-API routes.
+                        .anyRequest()
+                        .permitAll()
+                )
+
+                .addFilterBefore(
+                        jwtAuthenticationFilter,
+                        UsernamePasswordAuthenticationFilter.class
+                );
+
+        return http.build();
+    }
+
+    @Bean
+    public PasswordEncoder passwordEncoder() {
+        return new BCryptPasswordEncoder();
+    }
+}

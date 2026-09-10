@@ -16,4 +16,10 @@ public class URLResponse {
     private String longUrl;
 
     private LocalDateTime expirationTime;
+
+    private LocalDateTime createdAt;
+
+    private boolean active;
+
+    private long clicks;
 }
