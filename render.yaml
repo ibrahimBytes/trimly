@@ -3,7 +3,7 @@ services:
     name: url-shortener
     runtime: docker
     plan: free
-    branch: master
+    branch: main
 
     dockerfilePath: ./Dockerfile
     dockerContext: .
@@ -14,10 +14,8 @@ services:
       # PostgreSQL / Neon
       - key: SPRING_DATASOURCE_URL
         sync: false
-
       - key: SPRING_DATASOURCE_USERNAME
         sync: false
-
       - key: SPRING_DATASOURCE_PASSWORD
         sync: false
 
@@ -28,19 +26,14 @@ services:
       # Kafka / Aiven
       - key: KAFKA_SERVERS
         sync: false
-
       - key: KAFKA_SECURITY_PROTOCOL
         value: SASL_SSL
-
       - key: KAFKA_SASL_MECHANISM
         value: SCRAM-SHA-256
-
       - key: KAFKA_SASL_JAAS_CONFIG
         sync: false
-
       - key: KAFKA_SSL_TRUSTSTORE_TYPE
         value: PEM
-
       - key: KAFKA_SSL_TRUSTSTORE_CERTIFICATES
         sync: false
 
@@ -58,4 +51,4 @@ services:
 
       # API rate limiting
       - key: RATE_LIMIT
-        value: "20" 
+        value: "20"
