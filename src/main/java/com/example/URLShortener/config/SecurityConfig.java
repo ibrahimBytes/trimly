@@ -126,6 +126,12 @@ public class SecurityConfig {
                         )
                         .authenticated()
 
+                        .requestMatchers("/api/auth/me/sessions/**")
+                        .authenticated()
+
+                        .requestMatchers("/api/notifications/**")
+                        .authenticated()
+
                         /*
                          * Two-factor authentication.
                          *

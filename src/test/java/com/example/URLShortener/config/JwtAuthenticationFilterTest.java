@@ -3,17 +3,22 @@ package com.example.URLShortener.config;
 import com.example.URLShortener.models.User;
 import com.example.URLShortener.repository.UserRepository;
 import com.example.URLShortener.services.JwtService;
+import com.example.URLShortener.services.SessionService;
 import jakarta.servlet.FilterChain;
 import jakarta.servlet.http.HttpServletRequest;
 import jakarta.servlet.http.HttpServletResponse;
+import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
 import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
+import org.springframework.security.core.Authentication;
 import org.springframework.security.core.context.SecurityContextHolder;
 
+import java.util.Date;
 import java.util.Optional;
+import java.util.UUID;
 
 import static org.junit.jupiter.api.Assertions.*;
 import static org.mockito.Mockito.*;
@@ -26,6 +31,9 @@ class JwtAuthenticationFilterTest {
 
     @Mock
     private UserRepository userRepository;
+
+    @Mock
+    private SessionService sessionService;
 
     @Mock
     private HttpServletRequest request;
@@ -42,21 +50,24 @@ class JwtAuthenticationFilterTest {
 
     @BeforeEach
     void setUp() {
+        filter = new JwtAuthenticationFilter(
+                jwtService,
+                userRepository,
+                sessionService
+        );
 
-        filter =
-                new JwtAuthenticationFilter(
-                        jwtService,
-                        userRepository
-                );
+        user = User.builder()
+                .id(1)
+                .email("test@example.com")
+                .passwordHash("password-hash")
+                .tokenVersion(2L)
+                .build();
 
-        user =
-                User.builder()
-                        .id(1)
-                        .email("test@example.com")
-                        .passwordHash("password-hash")
-                        .tokenVersion(2L)
-                        .build();
+        SecurityContextHolder.clearContext();
+    }
 
+    @AfterEach
+    void tearDown() {
         SecurityContextHolder.clearContext();
     }
 
@@ -64,24 +75,37 @@ class JwtAuthenticationFilterTest {
     void validTokenWithCurrentVersion_authenticatesUser()
             throws Exception {
 
-        when(request.getHeader("Authorization"))
-                .thenReturn("Bearer valid-token");
+        String token = "valid-token";
+        UUID sessionId = UUID.randomUUID();
+        Date expiration =
+                new Date(System.currentTimeMillis() + 60_000);
 
-        when(jwtService.extractEmail("valid-token"))
-                .thenReturn("test@example.com");
+        givenBearerToken(token);
 
-        when(jwtService.extractTokenVersion("valid-token"))
-                .thenReturn(2L);
+        when(jwtService.extractEmail(token))
+                .thenReturn(user.getEmail());
 
-        when(userRepository.findByEmail("test@example.com"))
+        when(userRepository.findByEmail(user.getEmail()))
                 .thenReturn(Optional.of(user));
 
         when(jwtService.isTokenValid(
-                "valid-token",
-                "test@example.com",
-                2L
-        ))
-                .thenReturn(true);
+                token,
+                user.getEmail(),
+                user.getTokenVersion()
+        )).thenReturn(true);
+
+        when(jwtService.extractSessionId(token))
+                .thenReturn(sessionId);
+
+        when(jwtService.extractExpiration(token))
+                .thenReturn(expiration);
+
+        when(sessionService.validateAndTouch(
+                user,
+                sessionId,
+                expiration,
+                request
+        )).thenReturn(true);
 
         filter.doFilter(
                 request,
@@ -89,50 +113,106 @@ class JwtAuthenticationFilterTest {
                 filterChain
         );
 
-        assertTrue(
+        Authentication authentication =
                 SecurityContextHolder
                         .getContext()
-                        .getAuthentication()
-                        .isAuthenticated()
-        );
+                        .getAuthentication();
 
-        assertSame(
-                user,
-                SecurityContextHolder
-                        .getContext()
-                        .getAuthentication()
-                        .getPrincipal()
-        );
+        assertNotNull(authentication);
+        assertTrue(authentication.isAuthenticated());
+        assertSame(user, authentication.getPrincipal());
+
+        verify(sessionService)
+                .validateAndTouch(
+                        user,
+                        sessionId,
+                        expiration,
+                        request
+                );
 
         verify(filterChain)
-                .doFilter(
-                        request,
-                        response
-                );
+                .doFilter(request, response);
     }
 
     @Test
     void revokedToken_doesNotAuthenticateUser()
             throws Exception {
 
-        when(request.getHeader("Authorization"))
-                .thenReturn("Bearer old-token");
+        String token = "revoked-token";
+        UUID sessionId = UUID.randomUUID();
+        Date expiration =
+                new Date(System.currentTimeMillis() + 60_000);
 
-        when(jwtService.extractEmail("old-token"))
-                .thenReturn("test@example.com");
+        givenBearerToken(token);
 
-        when(jwtService.extractTokenVersion("old-token"))
-                .thenReturn(1L);
+        when(jwtService.extractEmail(token))
+                .thenReturn(user.getEmail());
 
-        when(userRepository.findByEmail("test@example.com"))
+        when(userRepository.findByEmail(user.getEmail()))
                 .thenReturn(Optional.of(user));
 
         when(jwtService.isTokenValid(
-                "old-token",
-                "test@example.com",
-                2L
-        ))
-                .thenReturn(false);
+                token,
+                user.getEmail(),
+                user.getTokenVersion()
+        )).thenReturn(true);
+
+        when(jwtService.extractSessionId(token))
+                .thenReturn(sessionId);
+
+        when(jwtService.extractExpiration(token))
+                .thenReturn(expiration);
+
+        when(sessionService.validateAndTouch(
+                user,
+                sessionId,
+                expiration,
+                request
+        )).thenReturn(false);
+
+        filter.doFilter(
+                request,
+                response,
+                filterChain
+        );
+
+        assertNull(
+                SecurityContextHolder
+                        .getContext()
+                        .getAuthentication()
+        );
+
+        verify(sessionService)
+                .validateAndTouch(
+                        user,
+                        sessionId,
+                        expiration,
+                        request
+                );
+
+        verify(filterChain)
+                .doFilter(request, response);
+    }
+
+    @Test
+    void tokenVersionMismatch_doesNotAuthenticateUser()
+            throws Exception {
+
+        String token = "revoked-token";
+
+        givenBearerToken(token);
+
+        when(jwtService.extractEmail(token))
+                .thenReturn(user.getEmail());
+
+        when(userRepository.findByEmail(user.getEmail()))
+                .thenReturn(Optional.of(user));
+
+        when(jwtService.isTokenValid(
+                token,
+                user.getEmail(),
+                user.getTokenVersion()
+        )).thenReturn(false);
 
         filter.doFilter(
                 request,
@@ -148,40 +228,31 @@ class JwtAuthenticationFilterTest {
 
         verify(jwtService)
                 .isTokenValid(
-                        "old-token",
-                        "test@example.com",
-                        2L
+                        token,
+                        user.getEmail(),
+                        user.getTokenVersion()
                 );
 
+        verifyNoInteractions(sessionService);
+
         verify(filterChain)
-                .doFilter(
-                        request,
-                        response
-                );
+                .doFilter(request, response);
     }
 
     @Test
-    void tokenVersionMismatch_doesNotAuthenticateUser()
+    void invalidToken_doesNotAuthenticateUser()
             throws Exception {
 
-        when(request.getHeader("Authorization"))
-                .thenReturn("Bearer revoked-token");
+        String token = "invalid-token";
 
-        when(jwtService.extractEmail("revoked-token"))
-                .thenReturn("test@example.com");
+        givenBearerToken(token);
 
-        when(jwtService.extractTokenVersion("revoked-token"))
-                .thenReturn(1L);
-
-        when(userRepository.findByEmail("test@example.com"))
-                .thenReturn(Optional.of(user));
-
-        when(jwtService.isTokenValid(
-                "revoked-token",
-                "test@example.com",
-                2L
-        ))
-                .thenReturn(false);
+        when(jwtService.extractEmail(token))
+                .thenThrow(
+                        new IllegalArgumentException(
+                                "Invalid JWT"
+                        )
+                );
 
         filter.doFilter(
                 request,
@@ -194,6 +265,130 @@ class JwtAuthenticationFilterTest {
                         .getContext()
                         .getAuthentication()
         );
+
+        verifyNoInteractions(userRepository);
+        verifyNoInteractions(sessionService);
+
+        verify(filterChain)
+                .doFilter(request, response);
+    }
+
+    @Test
+    void expiredToken_doesNotAuthenticateUser()
+            throws Exception {
+
+        String token = "expired-token";
+
+        givenBearerToken(token);
+
+        when(jwtService.extractEmail(token))
+                .thenReturn(user.getEmail());
+
+        when(userRepository.findByEmail(user.getEmail()))
+                .thenReturn(Optional.of(user));
+
+        when(jwtService.isTokenValid(
+                token,
+                user.getEmail(),
+                user.getTokenVersion()
+        )).thenReturn(false);
+
+        filter.doFilter(
+                request,
+                response,
+                filterChain
+        );
+
+        assertNull(
+                SecurityContextHolder
+                        .getContext()
+                        .getAuthentication()
+        );
+
+        verifyNoInteractions(sessionService);
+
+        verify(filterChain)
+                .doFilter(request, response);
+    }
+
+    @Test
+    void unknownUser_doesNotAuthenticateUser()
+            throws Exception {
+
+        String token = "unknown-user-token";
+
+        givenBearerToken(token);
+
+        when(jwtService.extractEmail(token))
+                .thenReturn("unknown@example.com");
+
+        when(userRepository.findByEmail("unknown@example.com"))
+                .thenReturn(Optional.empty());
+
+        filter.doFilter(
+                request,
+                response,
+                filterChain
+        );
+
+        assertNull(
+                SecurityContextHolder
+                        .getContext()
+                        .getAuthentication()
+        );
+
+        verifyNoInteractions(sessionService);
+
+        verify(filterChain)
+                .doFilter(request, response);
+    }
+
+    @Test
+    void legacyTokenWithoutSessionId_stillAuthenticates()
+            throws Exception {
+
+        String token = "legacy-token";
+
+        givenBearerToken(token);
+
+        when(jwtService.extractEmail(token))
+                .thenReturn(user.getEmail());
+
+        when(userRepository.findByEmail(user.getEmail()))
+                .thenReturn(Optional.of(user));
+
+        when(jwtService.isTokenValid(
+                token,
+                user.getEmail(),
+                user.getTokenVersion()
+        )).thenReturn(true);
+
+        when(jwtService.extractSessionId(token))
+                .thenThrow(
+                        new IllegalArgumentException(
+                                "Access token has no session id"
+                        )
+                );
+
+        filter.doFilter(
+                request,
+                response,
+                filterChain
+        );
+
+        Authentication authentication =
+                SecurityContextHolder
+                        .getContext()
+                        .getAuthentication();
+
+        assertNotNull(authentication);
+        assertTrue(authentication.isAuthenticated());
+        assertSame(user, authentication.getPrincipal());
+
+        verifyNoInteractions(sessionService);
+
+        verify(filterChain)
+                .doFilter(request, response);
     }
 
     @Test
@@ -215,31 +410,20 @@ class JwtAuthenticationFilterTest {
                         .getAuthentication()
         );
 
-        verifyNoInteractions(
-                jwtService,
-                userRepository
-        );
+        verifyNoInteractions(jwtService);
+        verifyNoInteractions(userRepository);
+        verifyNoInteractions(sessionService);
 
         verify(filterChain)
-                .doFilter(
-                        request,
-                        response
-                );
+                .doFilter(request, response);
     }
 
     @Test
-    void malformedToken_doesNotAuthenticateUser()
+    void nonBearerAuthorizationHeader_doesNotAuthenticateUser()
             throws Exception {
 
         when(request.getHeader("Authorization"))
-                .thenReturn("Bearer invalid-token");
-
-        when(jwtService.extractEmail("invalid-token"))
-                .thenThrow(
-                        new IllegalArgumentException(
-                                "Invalid JWT"
-                        )
-                );
+                .thenReturn("Basic abc123");
 
         filter.doFilter(
                 request,
@@ -253,34 +437,20 @@ class JwtAuthenticationFilterTest {
                         .getAuthentication()
         );
 
-        verifyNoInteractions(
-                userRepository
-        );
+        verifyNoInteractions(jwtService);
+        verifyNoInteractions(userRepository);
+        verifyNoInteractions(sessionService);
 
         verify(filterChain)
-                .doFilter(
-                        request,
-                        response
-                );
+                .doFilter(request, response);
     }
 
     @Test
-    void unknownUser_doesNotAuthenticateUser()
+    void emptyBearerToken_doesNotAuthenticateUser()
             throws Exception {
 
         when(request.getHeader("Authorization"))
-                .thenReturn("Bearer valid-token");
-
-        when(jwtService.extractEmail("valid-token"))
-                .thenReturn("unknown@example.com");
-
-        when(jwtService.extractTokenVersion("valid-token"))
-                .thenReturn(2L);
-
-        when(userRepository.findByEmail(
-                "unknown@example.com"
-        ))
-                .thenReturn(Optional.empty());
+                .thenReturn("Bearer ");
 
         filter.doFilter(
                 request,
@@ -294,11 +464,16 @@ class JwtAuthenticationFilterTest {
                         .getAuthentication()
         );
 
-        verify(jwtService, never())
-                .isTokenValid(
-                        anyString(),
-                        anyString(),
-                        anyLong()
-                );
+        verifyNoInteractions(jwtService);
+        verifyNoInteractions(userRepository);
+        verifyNoInteractions(sessionService);
+
+        verify(filterChain)
+                .doFilter(request, response);
+    }
+
+    private void givenBearerToken(String token) {
+        when(request.getHeader("Authorization"))
+                .thenReturn("Bearer " + token);
     }
 }

@@ -73,6 +73,7 @@ public class JwtService {
                 now.plus(expiration);
 
         return Jwts.builder()
+                .id(UUID.randomUUID().toString())
                 .subject(email)
                 .claim(TOKEN_VERSION_CLAIM, tokenVersion)
                 .claim(PURPOSE_CLAIM, "access")
@@ -218,6 +219,14 @@ public class JwtService {
                 ? 0L
                 : value.longValue();
     }
+
+    public UUID extractSessionId(String token) {
+        String id = extractAllClaims(token).getId();
+        if (id == null) throw new IllegalArgumentException("Access token has no session id");
+        return UUID.fromString(id);
+    }
+
+    public Date extractExpiration(String token) { return extractAllClaims(token).getExpiration(); }
 
     public boolean isTokenValid(
             String token,

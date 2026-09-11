@@ -19,6 +19,8 @@ import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
+import java.util.Set;
+import java.util.Locale;
 
 @Service
 @RequiredArgsConstructor
@@ -26,6 +28,10 @@ public class UrlService {
 
     private static final Duration CACHE_TTL =
             Duration.ofMinutes(5);
+    private static final Set<String> RESERVED_ALIASES = Set.of(
+            "api", "analytics", "settings", "links", "sign-in", "sign-up",
+            "help", "about", "terms", "privacy", "assets", "actuator", "error"
+    );
 
     private final UrlRepository urlRepository;
     private final ClickEventRepository clickEventRepository;
@@ -169,6 +175,11 @@ public class UrlService {
             desiredShortCode =
                     desiredShortCode.trim();
 
+            if (!desiredShortCode.matches("[A-Za-z0-9_-]{1,8}")
+                    || RESERVED_ALIASES.contains(desiredShortCode.toLowerCase(Locale.ROOT))) {
+                throw new InvalidAliasException("This memorable link ending is unavailable");
+            }
+
             if (urlRepository.existsByShortUrl(
                     desiredShortCode
             )) {
@@ -276,6 +287,10 @@ public class UrlService {
 
 
         return toResponse(finalEntity);
+    }
+
+    public static class InvalidAliasException extends RuntimeException {
+        public InvalidAliasException(String message) { super(message); }
     }
 
 

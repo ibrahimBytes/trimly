@@ -33,6 +33,8 @@ public class AccountDeletionService {
     private final StringRedisTemplate redisTemplate;
     private final PasswordEncoder passwordEncoder;
     private final ProfileImageService profileImageService;
+    private final SessionService sessionService;
+    private final NotificationService notificationService;
 
     @Transactional
     public void deleteAccount(User user, AccountDeletionRequest request) {
@@ -69,6 +71,8 @@ public class AccountDeletionService {
             twoFactorRepository.delete(twoFactor);
         }
         profileImageService.deleteStoredImageFor(user);
+        sessionService.deleteFor(user);
+        notificationService.deleteFor(user);
         userRepository.delete(user);
     }
 
