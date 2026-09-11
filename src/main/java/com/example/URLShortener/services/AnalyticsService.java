@@ -154,12 +154,30 @@ public class AnalyticsService {
     public AnalyticsDashboardResponse getDashboardAnalytics(
             User owner) {
 
+        return getDashboardAnalytics(owner, 30);
+    }
+
+    /**
+     * Builds a dashboard for the requested number of calendar days, including
+     * today. All range-sensitive values use the same [start, tomorrow) window.
+     */
+    @Transactional(readOnly = true)
+    public AnalyticsDashboardResponse getDashboardAnalytics(
+            User owner,
+            int days) {
+
+        if (days < 1 || days > 90) {
+            throw new IllegalArgumentException(
+                    "Analytics days must be between 1 and 90"
+            );
+        }
+
         LocalDate today =
                 LocalDate.now();
 
         LocalDateTime start =
                 today
-                        .minusDays(29)
+                        .minusDays(days - 1L)
                         .atStartOfDay();
 
         LocalDateTime tomorrow =
@@ -199,7 +217,11 @@ public class AnalyticsService {
 
             clickCounts =
                     clickEventRepository
-                            .countClicksByShortUrls(shortCodes)
+                            .countClicksByShortUrlsBetween(
+                                    shortCodes,
+                                    start,
+                                    tomorrow
+                            )
                             .stream()
                             .collect(
                                     Collectors.toMap(
@@ -244,7 +266,14 @@ public class AnalyticsService {
         // ---------------------------------------------------------------------
 
         long linksCreated =
-                urls.size();
+                urls.stream()
+                        .map(URL::getCreatedAt)
+                        .filter(Objects::nonNull)
+                        .filter(createdAt ->
+                                !createdAt.isBefore(start)
+                                        && createdAt.isBefore(tomorrow)
+                        )
+                        .count();
 
         // ---------------------------------------------------------------------
         // Daily clicks

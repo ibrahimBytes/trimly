@@ -49,6 +49,25 @@ public interface ClickEventRepository
     );
 
     /**
+     * Returns click counts grouped by short URL for a time range.
+     *
+     * start is inclusive and end is exclusive.
+     */
+    @Query("""
+            SELECT c.shortUrl, COUNT(c)
+            FROM ClickEvent c
+            WHERE c.shortUrl IN :shortUrls
+              AND c.clickedAt >= :start
+              AND c.clickedAt < :end
+            GROUP BY c.shortUrl
+            """)
+    List<Object[]> countClicksByShortUrlsBetween(
+            @Param("shortUrls") List<String> shortUrls,
+            @Param("start") LocalDateTime start,
+            @Param("end") LocalDateTime end
+    );
+
+    /**
      * Counts clicks for the supplied short URLs inside a time range.
      *
      * start is inclusive.

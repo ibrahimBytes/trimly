@@ -3,6 +3,7 @@ package com.example.URLShortener.controllers;
 import com.example.URLShortener.dto.ChangePasswordRequest;
 import com.example.URLShortener.models.User;
 import com.example.URLShortener.services.AuthService;
+import com.example.URLShortener.services.AccountDeletionService;
 import com.example.URLShortener.services.GoogleAuthService;
 import com.example.URLShortener.services.AuthService.InvalidCurrentPasswordException;
 import com.example.URLShortener.services.AuthService.SamePasswordException;
@@ -31,6 +32,9 @@ class AuthControllerTest {
     private GoogleAuthService googleAuthService;
 
     @Mock
+    private AccountDeletionService accountDeletionService;
+
+    @Mock
     private Authentication unauthenticatedAuthentication;
 
     private AuthController authController;
@@ -45,7 +49,8 @@ class AuthControllerTest {
         authController =
                 new AuthController(
                         authService,
-                        googleAuthService
+                        googleAuthService,
+                        accountDeletionService
                 );
 
         user =

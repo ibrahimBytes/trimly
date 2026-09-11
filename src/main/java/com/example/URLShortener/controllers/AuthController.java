@@ -9,8 +9,10 @@ import com.example.URLShortener.dto.UserResponse;
 import com.example.URLShortener.dto.ProfileUpdateRequest;
 import com.example.URLShortener.dto.LinkDefaultsResponse;
 import com.example.URLShortener.dto.LinkDefaultsUpdateRequest;
+import com.example.URLShortener.dto.AccountDeletionRequest;
 import com.example.URLShortener.models.User;
 import com.example.URLShortener.services.AuthService;
+import com.example.URLShortener.services.AccountDeletionService;
 import com.example.URLShortener.services.GoogleAuthService;
 import com.example.URLShortener.services.GoogleAuthService.GoogleAuthenticationException;
 import com.example.URLShortener.services.AuthService.EmailAlreadyExistsException;
@@ -31,6 +33,7 @@ public class AuthController {
 
     private final AuthService authService;
     private final GoogleAuthService googleAuthService;
+    private final AccountDeletionService accountDeletionService;
 
     @PostMapping("/register")
     public ResponseEntity<AuthResponse> register(
@@ -214,6 +217,21 @@ public class AuthController {
                         .build();
 
         return ResponseEntity.ok(response);
+    }
+
+    @DeleteMapping("/me")
+    public ResponseEntity<Void> deleteAccount(
+            Authentication authentication,
+            @RequestBody AccountDeletionRequest request) {
+        User user = getAuthenticatedUser(authentication);
+        try {
+            accountDeletionService.deleteAccount(user, request);
+            return ResponseEntity.noContent().build();
+        } catch (AccountDeletionService.InvalidAccountDeletionRequestException e) {
+            return ResponseEntity.badRequest().build();
+        } catch (AccountDeletionService.InvalidAccountDeletionCredentialsException e) {
+            return ResponseEntity.status(HttpStatus.UNAUTHORIZED).build();
+        }
     }
 
 

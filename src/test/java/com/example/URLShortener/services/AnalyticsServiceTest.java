@@ -11,6 +11,7 @@ import jakarta.servlet.http.HttpServletRequest;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
+import java.time.LocalDate;
 import java.time.LocalDateTime;
 import java.util.List;
 import java.util.Optional;
@@ -258,6 +259,7 @@ class AnalyticsServiceTest {
                         .longUrl("https://example.com")
                         .owner(owner)
                         .active(true)
+                        .createdAt(LocalDateTime.now())
                         .build();
 
         List<ClickEvent> events =
@@ -316,6 +318,7 @@ class AnalyticsServiceTest {
                         .longUrl("https://example.com")
                         .owner(owner)
                         .active(true)
+                        .createdAt(LocalDateTime.now())
                         .build();
 
         URL second =
@@ -325,13 +328,16 @@ class AnalyticsServiceTest {
                         .longUrl("https://example.org")
                         .owner(owner)
                         .active(true)
+                        .createdAt(LocalDateTime.now())
                         .build();
 
         when(urlRepository.findByOwner(owner))
                 .thenReturn(List.of(first, second));
 
-        when(clickEventRepository.countClicksByShortUrls(
-                List.of("abc", "xyz")
+        when(clickEventRepository.countClicksByShortUrlsBetween(
+                eq(List.of("abc", "xyz")),
+                any(LocalDateTime.class),
+                any(LocalDateTime.class)
         ))
         .thenReturn(
                 List.of(
@@ -384,8 +390,10 @@ class AnalyticsServiceTest {
                 .findByOwner(owner);
 
         verify(clickEventRepository)
-                .countClicksByShortUrls(
-                        List.of("abc", "xyz")
+                .countClicksByShortUrlsBetween(
+                        eq(List.of("abc", "xyz")),
+                        any(LocalDateTime.class),
+                        any(LocalDateTime.class)
                 );
     }
 
@@ -412,10 +420,14 @@ class AnalyticsServiceTest {
                 .isEmpty();
 
         assertThat(response.getDailyClicks())
-                .isNotEmpty();
+                .hasSize(30);
 
         verify(clickEventRepository, never())
-                .countClicksByShortUrls(anyList());
+                .countClicksByShortUrlsBetween(
+                        anyList(),
+                        any(LocalDateTime.class),
+                        any(LocalDateTime.class)
+                );
 
         verify(clickEventRepository, never())
                 .countClicksBetweenForShortUrls(
@@ -437,5 +449,58 @@ class AnalyticsServiceTest {
 
         verify(urlRepository, never())
                 .findByOwner(anotherUser);
+    }
+
+    @Test
+    void getDashboardAnalytics_usesRequestedRangeForTotalsAndChart() {
+        LocalDateTime now = LocalDateTime.now();
+        URL recent = URL.builder()
+                .id(1)
+                .shortUrl("recent")
+                .longUrl("https://example.com")
+                .owner(owner)
+                .createdAt(now.minusDays(2))
+                .build();
+        URL older = URL.builder()
+                .id(2)
+                .shortUrl("older")
+                .longUrl("https://example.org")
+                .owner(owner)
+                .createdAt(now.minusDays(10))
+                .build();
+
+        when(urlRepository.findByOwner(owner))
+                .thenReturn(List.of(recent, older));
+        when(clickEventRepository.countClicksByShortUrlsBetween(
+                eq(List.of("recent", "older")),
+                any(LocalDateTime.class),
+                any(LocalDateTime.class)
+        )).thenReturn(List.<Object[]>of(new Object[]{"recent", 4L}));
+        when(clickEventRepository.countClicksBetweenForShortUrls(
+                eq(List.of("recent", "older")),
+                any(LocalDateTime.class),
+                any(LocalDateTime.class)
+        )).thenReturn(1L);
+        when(clickEventRepository.countClicksByDayBetweenForShortUrls(
+                eq(List.of("recent", "older")),
+                any(LocalDateTime.class),
+                any(LocalDateTime.class)
+        )).thenReturn(List.of());
+
+        AnalyticsDashboardResponse response =
+                analyticsService.getDashboardAnalytics(owner, 7);
+
+        assertThat(response.getTotalClicks()).isEqualTo(4L);
+        assertThat(response.getLinksCreated()).isEqualTo(1L);
+        assertThat(response.getDailyClicks()).hasSize(7);
+        assertThat(response.getTopLinks().get(0).getShortCode())
+                .isEqualTo("recent");
+        assertThat(response.getTopLinks().get(0).getClicks()).isEqualTo(4L);
+
+        verify(clickEventRepository).countClicksByShortUrlsBetween(
+                eq(List.of("recent", "older")),
+                eq(LocalDate.now().minusDays(6).atStartOfDay()),
+                eq(LocalDate.now().plusDays(1).atStartOfDay())
+        );
     }
 }

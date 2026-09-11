@@ -120,6 +120,11 @@ public class ProfileImageService {
         return saved;
     }
 
+    /** Removes the file without mutating the user row (used during account deletion). */
+    public void deleteStoredImageFor(User user) {
+        deleteStoredFile(user.getProfileImageUrl());
+    }
+
     public Path resolve(String filename) {
         if (filename == null
                 || filename.isBlank()

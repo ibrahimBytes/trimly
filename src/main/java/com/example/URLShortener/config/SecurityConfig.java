@@ -120,6 +120,12 @@ public class SecurityConfig {
                         )
                         .authenticated()
 
+                        .requestMatchers(
+                                HttpMethod.DELETE,
+                                "/api/auth/me"
+                        )
+                        .authenticated()
+
                         /*
                          * Two-factor authentication.
                          *
