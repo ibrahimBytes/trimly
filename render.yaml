@@ -45,9 +45,10 @@ services:
       - key: GOOGLE_CLIENT_ID
         sync: false
 
-      # Generated short-link base URL
-      - key: APP_BASE_URL
-        sync: false
+      # Public short-link origin. This is intentionally independent of the
+      # Render API origin and can move to a custom domain later.
+      - key: APP_PUBLIC_BASE_URL
+        value: "https://trimly.s-ibrahim-devx.workers.dev"
 
       # API rate limiting
       - key: RATE_LIMIT

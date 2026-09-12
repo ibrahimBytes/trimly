@@ -10,6 +10,7 @@ import com.example.URLShortener.repository.UrlRepository;
 import jakarta.servlet.http.HttpServletRequest;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
+import org.springframework.test.util.ReflectionTestUtils;
 
 import java.time.LocalDate;
 import java.time.LocalDateTime;
@@ -43,6 +44,12 @@ class AnalyticsServiceTest {
                         clickEventRepository,
                         urlRepository
                 );
+
+        ReflectionTestUtils.setField(
+                analyticsService,
+                "publicBaseUrl",
+                "http://localhost:8080"
+        );
 
         owner =
                 User.builder()

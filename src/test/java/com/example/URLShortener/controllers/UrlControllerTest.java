@@ -278,7 +278,7 @@ class UrlControllerTest {
         URLResponse details =
                 URLResponse.builder()
                         .shortCode("abc")
-                        .shortUrl("http://localhost:8080/api/urls/abc")
+                        .shortUrl("http://localhost:8080/abc")
                         .longUrl("https://example.com")
                         .active(true)
                         .clicks(5)
@@ -365,7 +365,7 @@ class UrlControllerTest {
         URLResponse created =
                 URLResponse.builder()
                         .shortCode("abc")
-                        .shortUrl("http://localhost:8080/api/urls/abc")
+                        .shortUrl("http://localhost:8080/abc")
                         .longUrl("https://example.com")
                         .active(true)
                         .build();

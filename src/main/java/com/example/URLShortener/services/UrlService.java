@@ -37,8 +37,8 @@ public class UrlService {
     private final ClickEventRepository clickEventRepository;
     private final StringRedisTemplate redisTemplate;
 
-    @Value("${app.base-url:http://localhost:8080/api/urls}")
-    private String baseUrl;
+    @Value("${app.public-base-url:http://localhost:8080}")
+    private String publicBaseUrl;
 
 
     // ============================================================
@@ -600,12 +600,12 @@ public class UrlService {
             String shortCode
     ) {
 
-        if (baseUrl.endsWith("/")) {
+        if (publicBaseUrl.endsWith("/")) {
 
-            return baseUrl + shortCode;
+            return publicBaseUrl + shortCode;
         }
 
-        return baseUrl + "/" + shortCode;
+        return publicBaseUrl + "/" + shortCode;
     }
 
 

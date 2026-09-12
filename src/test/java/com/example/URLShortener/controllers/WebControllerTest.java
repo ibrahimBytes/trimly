@@ -87,7 +87,7 @@ class WebControllerTest {
                 URLResponse.builder()
                         .shortCode("abc")
                         .shortUrl(
-                                "http://localhost:8080/api/urls/abc"
+                                "http://localhost:8080/abc"
                         )
                         .longUrl(
                                 "https://example.com"

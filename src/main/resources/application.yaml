@@ -62,7 +62,7 @@ management:
 
 app:
   profile-image-dir: ${TRIMLY_PROFILE_IMAGE_DIR:${user.home}/.trimly/profile-images}
-  base-url: ${APP_BASE_URL:http://localhost:8080/api/urls}
+  public-base-url: ${APP_PUBLIC_BASE_URL:http://localhost:8080}
   rate-limit:
     requests-per-minute: ${RATE_LIMIT:20}
 
@@ -72,4 +72,4 @@ logging:
     org.springframework.web: INFO
 
 google:
-  client-id: ${GOOGLE_CLIENT_ID:} 
+  client-id: ${GOOGLE_CLIENT_ID:}

@@ -71,8 +71,8 @@ class UrlServiceTest {
 
         ReflectionTestUtils.setField(
                 urlService,
-                "baseUrl",
-                "http://localhost:8080/api/urls"
+                "publicBaseUrl",
+                "https://trimly.s-ibrahim-devx.workers.dev"
         );
     }
 
@@ -126,9 +126,12 @@ class UrlServiceTest {
 
         assertThat(response.getShortUrl())
                 .isEqualTo(
-                        "http://localhost:8080/api/urls/"
+                        "https://trimly.s-ibrahim-devx.workers.dev/"
                                 + response.getShortCode()
                 );
+
+        assertThat(response.getShortUrl())
+                .doesNotContain("trimly-backend-8k09.onrender.com");
 
         verify(urlRepository, times(2))
                 .save(
@@ -190,6 +193,27 @@ class UrlServiceTest {
 
         verify(urlRepository)
                 .existsByShortUrl("alias");
+    }
+
+    @Test
+    void createShortUrl_usesThePublicOriginForCustomAliases() {
+        URLRequest request = new URLRequest();
+        request.setLongUrl("https://example.com/custom");
+        request.setCustomAlias("launch");
+
+        when(valueOperations.get("long:user:1:https://example.com/custom"))
+                .thenReturn(null);
+        when(urlRepository.findByLongUrlAndActiveTrueAndOwner(
+                "https://example.com/custom", owner))
+                .thenReturn(Optional.empty());
+        when(urlRepository.existsByShortUrl("launch")).thenReturn(false);
+        when(urlRepository.save(any(URL.class))).thenAnswer(invocation -> invocation.getArgument(0));
+
+        URLResponse response = urlService.createShortUrl(request, owner);
+
+        assertThat(response.getShortCode()).isEqualTo("launch");
+        assertThat(response.getShortUrl())
+                .isEqualTo("https://trimly.s-ibrahim-devx.workers.dev/launch");
     }
 
     @Test

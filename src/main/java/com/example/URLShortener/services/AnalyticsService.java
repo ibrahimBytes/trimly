@@ -32,8 +32,8 @@ public class AnalyticsService {
     private final ClickEventRepository clickEventRepository;
     private final UrlRepository urlRepository;
 
-    @Value("${app.base-url:http://localhost:8080/api/urls}")
-    private String baseUrl;
+    @Value("${app.public-base-url:http://localhost:8080}")
+    private String publicBaseUrl;
 
     private static final DateTimeFormatter FORMATTER =
             DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss");
@@ -423,6 +423,6 @@ public class AnalyticsService {
     private String buildShortUrl(
             String shortCode) {
 
-        return baseUrl + "/" + shortCode;
+        return publicBaseUrl.replaceAll("/+$", "") + "/" + shortCode;
     }
 }
