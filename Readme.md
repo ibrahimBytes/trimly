@@ -29,7 +29,7 @@ Create and manage short links from a focused workspace.
 Monitor link activity and analyze click performance over time.
 
 <p align="center">
-  <img src="docs/screenshots/analytics.png" width="900" alt="Trimly analytics dashboard">
+  <img src="src/screenshots/analytics.png" width="900" alt="Trimly analytics dashboard">
 </p>
 
 ### Account & Security
@@ -37,7 +37,7 @@ Monitor link activity and analyze click performance over time.
 Manage account information, authentication, security, and workspace preferences.
 
 <p align="center">
-  <img src="docs/screenshots/settings.png" width="900" alt="Trimly account and security settings">
+  <img src="src/screenshots/settings.png" width="900" alt="Trimly account and security settings">
 </p>
 
 ---
