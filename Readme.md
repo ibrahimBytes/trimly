@@ -21,7 +21,7 @@ The application source code is private. This repository contains the project's p
 Create and manage short links from a focused workspace.
 
 <p align="center">
-  <img src="docs/screenshots/links.png" width="900" alt="Trimly link management">
+  <img src="src/screenshots/links.png" width="900" alt="Trimly link management">
 </p>
 
 ### Analytics
