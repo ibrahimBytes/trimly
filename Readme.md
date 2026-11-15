@@ -1,16 +1,16 @@
 # Trimly
 
-> A production-oriented URL shortener built with **Java 21, Spring Boot, PostgreSQL, Redis, and Apache Kafka**.
+> A production-oriented URL shortener built with **Java 21, Spring Boot, Spring Security, PostgreSQL, Redis, and Apache Kafka**.
 
 **Live Application:** [Open Trimly](https://trimly.s-ibrahim-devx.workers.dev/about)
 
-Trimly transforms long URLs into short, shareable links with custom aliases, expiration, authentication, rate limiting, and click analytics.
+Trimly is a URL shortening and link analytics platform that transforms long URLs into short, shareable links with custom aliases, expiration, authentication, access control, and click analytics.
 
 The application follows a simple workflow:
 
 **Create → Share → Resolve → Manage → Analyse**
 
-Trimly is maintained as a **public-source-code project**. The complete application implementation is publicly available for inspection, learning, code reviews, and contributions.
+Trimly is a public-source-code project. Its complete application implementation is publicly accessible for inspection, learning, code reviews, and contributions.
 
 ---
 
@@ -18,25 +18,21 @@ Trimly is maintained as a **public-source-code project**. The complete applicati
 
 - [Product Preview](#product-preview)
 - [Features](#features)
+- [Technology Stack](#technology-stack)
 - [Architecture](#architecture)
 - [Request Flows](#request-flows)
 - [Asynchronous Analytics](#asynchronous-analytics)
-- [Kafka Architecture](#kafka-architecture)
-- [Data and Caching Strategy](#data-and-caching-strategy)
-- [Security and Ownership](#security-and-ownership)
-- [Rate Limiting](#rate-limiting)
-- [Link Expiration](#link-expiration)
+- [Security and Authentication](#security-and-authentication)
+- [Database and Caching](#database-and-caching)
 - [REST API](#rest-api)
-- [Web Interface](#web-interface)
-- [Analytics Dashboard](#analytics-dashboard)
-- [Technology Stack](#technology-stack)
+- [Analytics](#analytics)
+- [Performance Engineering](#performance-engineering)
 - [Getting Started](#getting-started)
 - [Configuration](#configuration)
 - [Testing](#testing)
 - [Project Structure](#project-structure)
 - [Deployment](#deployment)
 - [Engineering Decisions](#engineering-decisions)
-- [Design Principles](#design-principles)
 - [Security Guidelines](#security-guidelines)
 - [Contributing](#contributing)
 - [License](#license)
@@ -50,10 +46,10 @@ Trimly is maintained as a **public-source-code project**. The complete applicati
 Create and manage short links from a focused workspace.
 
 <p align="center">
-  <img src="src/screenshots/links.png" width="900" alt="Trimly link management dashboard">
+  <img src="src/screenshots/links.png" width="900" alt="Trimly link management">
 </p>
 
-### Analytics
+### Analytics Dashboard
 
 Monitor link activity and analyse click performance over time.
 
@@ -73,37 +69,70 @@ Manage account information, authentication, security, and workspace preferences.
 
 # Features
 
-### Link Management
+### URL Management
 
-- **Short URL generation** — Convert long URLs into compact, shareable links.
-- **Custom aliases** — Choose custom alphanumeric short codes.
-- **Link expiration** — Automatically expire links at a configured date and time.
-- **Link ownership** — Associate links with authenticated users.
-- **Link management** — Manage and monitor created short URLs.
+- Short URL generation.
+- Custom aliases.
+- Link expiration.
+- User-owned links.
+- Link management.
+- URL validation.
 
 ### Authentication and Security
 
-- **Authentication** — Protected link management and user-scoped resources.
-- **Google Sign-In** — Authenticate using Google.
-- **Two-factor authentication** — Additional account security.
-- **Password security** — BCrypt-based password hashing.
-- **Rate limiting** — Bucket4j-based request limiting.
-- **Input validation** — Validate URLs and aliases before processing.
+- JWT-based authentication.
+- Spring Security integration.
+- BCrypt password hashing.
+- Google Sign-In.
+- Two-factor authentication.
+- User-scoped resource access.
+- Rate limiting.
 
-### Analytics and Performance
+### Caching and Data Management
 
-- **Click analytics** — Track link activity and request metadata.
-- **Asynchronous analytics** — Process click events through Apache Kafka.
-- **Redis caching** — Accelerate frequently accessed URL resolutions.
-- **Graceful degradation** — Redirects can continue when Kafka is temporarily unavailable.
-- **Scheduled cleanup** — Remove expired URLs from persistent storage and cache.
+- Redis caching for URL resolution.
+- PostgreSQL persistent storage.
+- Flyway database migrations.
+- Database indexing and query optimisation.
 
-### Engineering and Infrastructure
+### Asynchronous Processing
 
-- **PostgreSQL** — Durable application and analytics storage.
-- **Flyway migrations** — Version-controlled database schema changes.
-- **Docker** — Reproducible application and infrastructure runtime.
-- **Automated testing** — JUnit, Mockito, and JaCoCo-based test suite.
+- Apache Kafka event streaming.
+- Asynchronous click analytics.
+- Background analytics persistence.
+- Graceful degradation when Kafka is unavailable.
+
+### Testing and Engineering
+
+- 35 REST API endpoints.
+- 71 passing automated tests across 9 test suites.
+- JUnit and Mockito.
+- JaCoCo test coverage.
+- Maven build automation.
+- Docker-based infrastructure.
+
+---
+
+# Technology Stack
+
+| Layer | Technology |
+|---|---|
+| Programming Language | Java 21 |
+| Backend Framework | Spring Boot 4 |
+| Security | Spring Security |
+| Authentication | JWT |
+| Password Hashing | BCrypt |
+| ORM | Spring Data JPA / Hibernate |
+| Database | PostgreSQL |
+| Caching | Redis |
+| Event Streaming | Apache Kafka |
+| Rate Limiting | Bucket4j |
+| Database Migrations | Flyway |
+| Testing | JUnit 5, Mockito |
+| Code Coverage | JaCoCo |
+| Build Tool | Maven |
+| Containerisation | Docker, Docker Compose |
+| Web Interface | Thymeleaf, HTML, CSS |
 
 ---
 
@@ -142,14 +171,15 @@ Trimly uses PostgreSQL as its persistent data store, Redis as its caching layer,
 
 | Component | Responsibility |
 |---|---|
-| Spring Boot | REST API, business logic, authentication, URL operations |
-| PostgreSQL | Durable application and analytics data |
-| Redis | High-speed URL lookup and caching |
-| Kafka | Asynchronous click-event processing |
+| Spring Boot | REST API and business logic |
+| Spring Security | Authentication and access control |
+| JWT | Stateless authentication |
+| PostgreSQL | Persistent application and analytics data |
+| Redis | High-speed URL resolution |
+| Apache Kafka | Asynchronous event processing |
 | Flyway | Database schema versioning |
-| Bucket4j | IP-based rate limiting |
-| Thymeleaf | Server-rendered web interface |
-| Docker | Reproducible application and infrastructure runtime |
+| Bucket4j | Request rate limiting |
+| Docker | Reproducible infrastructure |
 
 ---
 
@@ -165,6 +195,8 @@ Spring Boot API
   │
   ├── Validate URL / alias
   │
+  ├── Authenticate and authorise
+  │
   ├── Persist link
   │       │
   │       ▼
@@ -176,7 +208,7 @@ Spring Boot API
         Redis
 ```
 
-The application validates the request, persists the URL in PostgreSQL, and populates Redis for subsequent resolution.
+The application validates the request, verifies the applicable access permissions, persists the URL in PostgreSQL, and populates Redis for subsequent resolution.
 
 ## 2. Resolve Short URL
 
@@ -205,7 +237,7 @@ Redis
 
 Redis provides a performance layer while PostgreSQL remains the authoritative source of application data.
 
-## 3. Analytics
+## 3. Analytics Processing
 
 ```text
 Short URL Request
@@ -225,15 +257,15 @@ Analytics Consumer
    PostgreSQL
 ```
 
-Click analytics are processed asynchronously so database writes do not unnecessarily extend the redirect request.
+Click analytics are processed asynchronously to separate analytics persistence from URL resolution.
 
 ---
 
 # Asynchronous Analytics
 
-One of Trimly's main architectural decisions is separating URL resolution from analytics persistence.
+One of Trimly's architectural decisions is separating URL resolution from analytics persistence.
 
-### Synchronous approach
+### Synchronous Approach
 
 ```text
 GET /{code}
@@ -248,7 +280,7 @@ Database INSERT
 302 Redirect
 ```
 
-### Kafka-based approach
+### Kafka-Based Approach
 
 ```text
 GET /{code}
@@ -268,165 +300,81 @@ Background Consumer
 PostgreSQL
 ```
 
-The redirect path avoids waiting for the analytics database write.
+The Kafka-based approach separates analytics database writes from the redirect request path.
 
-### Performance Comparison
+This reduces direct database pressure on URL resolution and allows analytics persistence to be handled independently.
 
-The documented local performance benchmarks are:
+### Architectural Benefits
 
-| Metric | Synchronous | Kafka-based |
-|---|---:|---:|
-| Redirect latency | ~18 ms | ~4 ms |
-| Analytics write | Request path | Background |
-| Database pressure | Directly affects redirects | Consumer-controlled |
-| Temporary database issues | Can affect analytics path | Events can remain queued |
-
-These measurements are environment-dependent implementation benchmarks, not universal performance guarantees.
+- Separation of redirect and analytics workloads.
+- Background event processing.
+- Independent analytics persistence.
+- Better control over database write workloads.
+- Improved failure isolation.
 
 ---
 
-# Kafka Architecture
+# Security and Authentication
 
-Trimly uses **Apache Kafka in KRaft mode**, eliminating the need for a separate ZooKeeper deployment.
+Trimly uses Spring Security and JWT-based authentication to protect user-specific operations.
 
-```text
-                 ┌──────────────────┐
-                 │   Spring Boot    │
-                 │       App        │
-                 └────────┬─────────┘
-                          │
-                          │ ClickEventMessage
-                          ▼
-                 ┌──────────────────┐
-                 │      Kafka       │
-                 │      KRaft       │
-                 │                  │
-                 │ url-click-events │
-                 └────────┬─────────┘
-                          │
-                          ▼
-                 ┌──────────────────┐
-                 │ ClickEvent       │
-                 │ Consumer         │
-                 │                  │
-                 │ @KafkaListener   │
-                 └────────┬─────────┘
-                          │
-                          ▼
-                       PostgreSQL
-```
+### Authentication
 
-Click events contain information such as:
+- JWT-based authentication.
+- Password hashing using BCrypt.
+- Google Sign-In.
+- Two-factor authentication.
+- Protected application endpoints.
 
-- Short code
-- Timestamp
-- IP address
-- User agent
+### Authorisation
 
-Events are keyed by short code to support partition-level ordering for a given link.
+- User-scoped resources.
+- Protected link management.
+- Access-controlled analytics.
+- Separation between public redirects and authenticated management operations.
+
+Public short-link resolution does not require the link owner to authenticate.
+
+Management and analytics operations require appropriate authentication and authorisation.
 
 ---
 
-# Data and Caching Strategy
+# Database and Caching
 
 ## PostgreSQL
 
-PostgreSQL is the source of truth for durable application state.
+PostgreSQL is the source of truth for persistent application state.
 
 It stores:
 
-- Short URLs
-- Destination URLs
-- Expiration information
-- Ownership information
-- Click analytics
-- Other persistent application data
-
-> Cache for speed. Persist for correctness.
+- Short URLs.
+- Destination URLs.
+- Expiration information.
+- Ownership information.
+- Click analytics.
+- Other application data.
 
 ## Redis
 
-Redis provides fast access to frequently resolved URLs.
+Redis provides high-speed access to frequently resolved URLs.
 
-The application uses caching for:
+Caching is used for:
 
-- Short-code → destination URL resolution
-- Long-URL → short-code lookups
-- Rate-limiting state
+- Short-code to destination URL resolution.
+- Long-URL to short-code lookups.
+- Rate-limiting state.
 
 A cache miss falls back to PostgreSQL and repopulates the cache.
 
----
-
-# Security and Ownership
-
-Trimly separates public URL resolution from authenticated management operations.
-
-### Public Operations
-
-Short links can be resolved without requiring the owner to authenticate.
-
-### Protected Operations
-
-Management and analytics operations are scoped to authenticated users and their owned resources.
-
-Security-related functionality includes:
-
-- Google authentication
-- Two-factor authentication
-- User-scoped resources
-- Input validation
-- Rate limiting
-- Protected management operations
-- Secrets kept outside source control
-
----
-
-# Rate Limiting
-
-Trimly uses **Bucket4j** to limit requests by IP address.
-
-### Default Configuration
-
-```text
-20 requests / minute / IP
-```
-
-Requests exceeding the configured limit receive:
-
-```http
-429 Too Many Requests
-```
-
-The limit is configurable through environment variables.
-
----
-
-# Link Expiration
-
-Links can optionally contain an expiration timestamp.
-
-### Resolution Behaviour
-
-| Condition | Response |
-|---|---|
-| Active link | `302 Found` |
-| Expired link | `410 Gone` |
-| Unknown short code | `404 Not Found` |
-
-Expired links are also removed through scheduled cleanup.
-
-The cleanup process removes expired URLs from persistent storage and the cache.
+> Cache for performance. Persist for correctness.
 
 ---
 
 # REST API
 
-Base URL:
+Trimly implements **35 REST API endpoints** covering application operations, authentication, URL management, and analytics.
 
-```text
-http://localhost:8080
-```
+The following examples illustrate representative API operations.
 
 ## Create Short URL
 
@@ -450,8 +398,8 @@ Content-Type: application/json
 | Field | Required | Description |
 |---|---|---|
 | `longUrl` | Yes | Destination URL |
-| `customAlias` | No | Custom 1–8 character alphanumeric short code |
-| `expirationTime` | No | ISO-8601 expiration timestamp |
+| `customAlias` | No | Custom short code |
+| `expirationTime` | No | Expiration timestamp |
 
 ### Example Response
 
@@ -468,15 +416,7 @@ Content-Type: application/json
 }
 ```
 
-### Error Responses
-
-| Status | Meaning |
-|---|---|
-| `400` | Invalid request or validation failure |
-| `409` | Custom alias already exists |
-| `429` | Rate limit exceeded |
-
-## Redirect Short URL
+## Resolve Short URL
 
 ```http
 GET /api/urls/{shortCode}
@@ -484,64 +424,57 @@ GET /api/urls/{shortCode}
 
 Possible responses:
 
-```text
-302 Found       Active link
-410 Gone        Expired link
-404 Not Found   Unknown short code
-```
+| Status | Description |
+|---|---|
+| `302` | Active link |
+| `410` | Expired link |
+| `404` | Unknown short code |
 
-Each successful redirect also produces an asynchronous analytics event.
+Each successful redirect also produces an analytics event.
 
----
-
-# Web Interface
-
-Trimly includes a server-rendered Thymeleaf interface with:
-
-- Shorten URL form
-- Custom alias support
-- Expiration date picker
-- Generated URL result card
-- One-click copy functionality
-- Inline validation errors
-- Analytics dashboard
-- Dark-themed interface
+**Note:** These are representative endpoint examples, not the complete API specification.
 
 ---
 
-# Analytics Dashboard
+# Analytics
 
-The analytics system tracks click activity and associated request metadata.
+Trimly processes click events through Apache Kafka and persists analytics data in PostgreSQL.
 
 Analytics can include:
 
-- Click counts
-- Activity over time
-- IP information
-- User-agent information
-- Link-specific statistics
+- Click counts.
+- Activity over time.
+- IP information.
+- User-agent information.
+- Link-specific statistics.
 
-Analytics persistence occurs asynchronously through Kafka.
+The analytics processing architecture separates event generation from database persistence.
 
 ---
 
-# Technology Stack
+# Performance Engineering
 
-| Layer | Technology |
-|---|---|
-| Language | Java 21 |
-| Backend | Spring Boot 4 |
-| Web UI | Thymeleaf, HTML, CSS |
-| Database | PostgreSQL 15 |
-| Cache | Redis |
-| Event Streaming | Apache Kafka / KRaft |
-| Rate Limiting | Bucket4j |
-| ORM | Spring Data JPA / Hibernate |
-| Migrations | Flyway |
-| Testing | JUnit 5, Mockito |
-| Coverage | JaCoCo |
-| Build | Maven |
-| Containers | Docker Compose |
+Trimly uses Redis caching and Kafka-based asynchronous processing to improve the efficiency of URL resolution and analytics ingestion.
+
+### Performance Objectives
+
+- Minimise redirect latency.
+- Reduce unnecessary database reads.
+- Separate analytics writes from redirect processing.
+- Control database write workloads.
+- Maintain efficient resource utilisation.
+
+Performance improvements should be evaluated using reproducible benchmarks rather than assumptions.
+
+Relevant metrics include:
+
+- Minimum response time.
+- Mean response time.
+- P50 latency.
+- P95 latency.
+- P99 latency.
+- Throughput.
+- Error rate.
 
 ---
 
@@ -571,7 +504,7 @@ Replace the placeholders with your actual GitHub repository URL and directory.
 docker-compose up -d
 ```
 
-This starts:
+Expected local services:
 
 ```text
 PostgreSQL → localhost:5431
@@ -581,7 +514,7 @@ Kafka      → localhost:9092
 
 ## 3. Configure Environment Variables
 
-Create your local environment configuration using the variables required by the application.
+Configure the environment variables required by the application.
 
 Never commit production credentials or local secret files.
 
@@ -599,15 +532,7 @@ The application becomes available at:
 http://localhost:8080
 ```
 
-## 5. Open the Web Interface
-
-Visit:
-
-```text
-http://localhost:8080
-```
-
-## 6. Stop Infrastructure
+## 5. Stop Infrastructure
 
 ```bash
 docker-compose down
@@ -623,7 +548,7 @@ Application configuration is defined in:
 src/main/resources/application.yaml
 ```
 
-### Default Configuration
+### Configuration Reference
 
 | Property | Default |
 |---|---|
@@ -634,9 +559,10 @@ src/main/resources/application.yaml
 | Kafka consumer group | `analytics-consumer-group` |
 | Rate limit | `20 requests/minute/IP` |
 | Cleanup schedule | Hourly |
-| Short-link base URL | `http://localhost:8080/api/urls` |
 
-### Supported Environment Overrides
+### Environment Variables
+
+Previously documented environment overrides include:
 
 ```text
 KAFKA_SERVERS
@@ -644,30 +570,51 @@ APP_BASE_URL
 RATE_LIMIT
 ```
 
-Additional environment variables may be required depending on the authentication, database, and deployment configuration.
+Additional configuration may be required for JWT, database connections, and external authentication providers.
 
-Consult the actual application configuration before starting the application.
+Consult the application configuration for the complete list.
 
 ---
 
 # Testing
 
-Run the complete verification suite:
+Trimly has a documented automated test suite containing:
+
+<details>
+<summary><strong>Test Metrics</strong></summary>
+
+| Metric | Result |
+|---|---:|
+| REST API endpoints | 35 |
+| Passing automated tests | 71 |
+| Test suites | 9 |
+| Test framework | JUnit 5 |
+| Mocking framework | Mockito |
+| Coverage tool | JaCoCo |
+
+</details>
+
+The test suite validates application behaviour across multiple components.
+
+Testing areas include:
+
+- REST API functionality.
+- URL generation and management.
+- Authentication and access control.
+- Redis caching.
+- Analytics processing.
+- Kafka event handling.
+- Database operations.
+- Expiration and cleanup.
+- Request validation and error handling.
+
+### Run Tests
 
 ```bash
 ./mvnw clean verify
 ```
 
-The documented test suite contains **25 tests** with JaCoCo coverage enforcement.
-
-| Test Class | Tests | Coverage |
-|---|---:|---|
-| `UrlControllerTest` | 7 | REST endpoints, Kafka publishing, graceful degradation |
-| `WebControllerTest` | 5 | Thymeleaf rendering and form validation |
-| `UrlServiceTest` | 5 | URL generation, caching, expiration |
-| `AnalyticsServiceTest` | 3 | Analytics queries and metadata mapping |
-| `ClickEventConsumerTest` | 3 | Kafka persistence and message handling |
-| `CleanupServiceTest` | 2 | Expired URL cleanup |
+This executes the Maven verification lifecycle, including configured tests and coverage checks.
 
 ---
 
@@ -709,10 +656,8 @@ src/main/java/com/example/URLShortener/
 
 src/main/resources/
 ├── application.yaml
-│
 ├── db/
 │   └── migration/
-│
 └── templates/
     ├── index.html
     └── analytics.html
@@ -740,103 +685,80 @@ Trimly follows a containerised cloud deployment model.
 
 ### Deployment Principles
 
-- Containerised application runtime
-- Managed PostgreSQL
-- Managed Redis
-- Managed Kafka
-- Environment-based configuration
-- Automated database migrations
-- Health checks
-- Externalised secrets
-- Reproducible deployment
+- Containerised application runtime.
+- Managed PostgreSQL.
+- Managed Redis.
+- Managed Kafka.
+- Environment-based configuration.
+- Automated database migrations.
+- Health checks.
+- Externalised secrets.
+- Reproducible deployment.
 
 ---
 
 # Engineering Decisions
 
-### 1. PostgreSQL Is the Source of Truth
+### 1. PostgreSQL as the Source of Truth
 
-Redis improves performance but does not replace durable persistence.
+Redis improves lookup performance but does not replace durable persistence.
 
-### 2. Redis Accelerates the Critical Path
+### 2. Redis for Frequently Accessed Data
 
-Short-link resolution is a high-frequency operation, making it a natural candidate for caching.
+Short-link resolution is a frequent operation, making caching an effective performance optimisation.
 
-### 3. Kafka Separates Analytics from Redirects
+### 3. Kafka for Analytics Processing
 
-Analytics processing is non-critical to the redirect itself, so it is handled asynchronously.
+Analytics persistence is separated from the redirect path through asynchronous event processing.
 
-### 4. Public Resolution Is Separate from Ownership
+### 4. JWT for Authentication
 
-A short link can be publicly resolved while management and analytics remain authenticated and user-scoped.
+JWT-based authentication allows protected application operations to verify user identity through signed tokens.
 
-### 5. Flyway Keeps Schema Changes Reproducible
+### 5. Public Resolution and Private Ownership
+
+Short links are publicly resolvable while management operations remain protected by authentication and authorisation.
+
+### 6. Flyway for Schema Management
 
 Database changes are version-controlled and applied through migrations.
 
-### 6. Rate Limiting Protects the Service
+### 7. Rate Limiting for Request Control
 
-Requests are limited per IP to reduce excessive traffic against the application.
+Bucket4j limits requests to reduce excessive traffic against the application.
 
-### 7. Expired Resources Are Actively Cleaned Up
+### 8. Scheduled Expiration Cleanup
 
-A scheduled job removes expired URLs from persistent storage and the cache.
-
-### 8. Deployment Is Explicit and Reproducible
-
-Containers, managed infrastructure, environment configuration, and migrations reduce reliance on manual setup.
-
----
-
-# Design Principles
-
-1. **Keep the critical path small.**
-2. **Use durable storage as the source of truth.**
-3. **Use caching to improve performance, not correctness.**
-4. **Move non-critical processing asynchronously.**
-5. **Separate public resolution from private ownership.**
-6. **Treat security as an architectural concern.**
-7. **Prefer explicit and reproducible deployment.**
-8. **Design for graceful degradation where possible.**
-
-The product is intentionally simple:
-
-> Create a short link, share it, and get a fast redirect.
-
-The engineering underneath it is structured to keep that experience reliable as the system grows.
+Expired URLs are removed from persistent storage and the cache through scheduled cleanup.
 
 ---
 
 # Security Guidelines
 
-Trimly is a public-source-code project. All source code and non-sensitive engineering documentation are available for public inspection.
+Trimly is a public-source-code project. Its application implementation is publicly accessible.
 
-However, publicly accessible source code must never contain production secrets.
-
-### Sensitive Information
+However, public source-code availability does not mean production credentials should be public.
 
 Never commit:
 
-- Database passwords
-- JWT signing secrets
-- OAuth client secrets
-- API keys
-- Redis credentials
-- Kafka credentials
-- Private keys
-- Production environment files
-- Personal access tokens
+- Database passwords.
+- JWT signing secrets.
+- OAuth client secrets.
+- API keys.
+- Redis credentials.
+- Kafka credentials.
+- Private keys.
+- Production environment files.
+- Personal access tokens.
 
-### Recommended Practices
+### Security Practices
 
 - Use environment variables for sensitive configuration.
 - Maintain an appropriate `.gitignore`.
 - Use secure deployment environment configuration.
-- Rotate credentials if they are accidentally exposed.
+- Rotate credentials if accidentally exposed.
 - Review Git history for previously committed secrets.
-- Never expose sensitive user information through application logs.
-
-Public code visibility and production credential confidentiality must be maintained independently.
+- Avoid exposing sensitive user information in application logs.
 
 ---
 
@@ -844,22 +766,22 @@ Public code visibility and production credential confidentiality must be maintai
 
 Contributions and constructive feedback are welcome.
 
-If you want to contribute:
+### Contribution Workflow
 
 1. Fork the repository.
 2. Create a feature branch.
-3. Make your changes.
+3. Implement your changes.
 4. Add or update relevant tests.
 5. Run the verification suite.
-6. Submit a pull request describing your changes.
+6. Submit a pull request explaining your changes.
 
 ### Contribution Guidelines
 
 - Follow existing coding conventions.
-- Prefer clear and maintainable implementations.
+- Prefer maintainable implementations.
 - Avoid unnecessary dependencies.
 - Include tests for new functionality.
-- Preserve existing API behaviour unless changes are intentional.
+- Preserve existing API contracts unless changes are intentional.
 - Never commit secrets or private credentials.
 - Document significant architectural changes.
 
@@ -875,22 +797,22 @@ Trimly is live and under active development, with continued work focused on reli
 
 # Repository Scope
 
-Trimly is an open-source project with its application source code publicly available.
+Trimly is a public-source-code project.
 
-The public repository provides access to:
+The repository provides access to:
 
-- Complete application source code
-- Backend implementation
-- Frontend implementation
-- Database migrations
-- Application configuration templates
-- Infrastructure configuration
-- Automated tests
-- Architecture documentation
-- API documentation
-- Engineering decisions
+- Complete application source code.
+- Backend implementation.
+- Frontend implementation.
+- Database migrations.
+- Application configuration templates.
+- Infrastructure configuration.
+- Automated tests.
+- Architecture documentation.
+- API documentation.
+- Engineering decisions.
 
-The repository is intended to support transparency, technical learning, collaboration, code reviews, and continued engineering improvements.
+The project is intended to support transparency, technical learning, collaboration, code reviews, and continued engineering improvements.
 
 ---
 
@@ -906,6 +828,6 @@ See the [LICENSE](LICENSE) file for details.
 
 **Trimly — Shorten links. Understand engagement. Build better.**
 
-Built with Java, Spring Boot, PostgreSQL, Redis, and Apache Kafka.
+Built with Java 21, Spring Boot, PostgreSQL, Redis, and Apache Kafka.
 
 </p> 
